@@ -1,0 +1,4 @@
+.DS_Store
+.pilot-state.json
+.pilot-state.json.tmp
+node_modules/

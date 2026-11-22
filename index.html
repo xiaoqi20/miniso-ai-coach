@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>MINISO 名创优品 · AI 产品授课与陪练系统</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="phone-frame">
+    <!-- 顶部状态栏 -->
+    <div id="status-bar" class="status-bar dark">
+      <span>09:41</span>
+      <div class="status-signal">
+        <span>MINISO 企微学堂</span>
+        <svg width="16" height="12" viewBox="0 0 16 12" fill="none">
+          <rect x="0" y="7" width="3" height="5" rx="1" fill="currentColor" opacity="0.5"/>
+          <rect x="4.5" y="5" width="3" height="7" rx="1" fill="currentColor" opacity="0.7"/>
+          <rect x="9" y="2.5" width="3" height="9.5" rx="1" fill="currentColor" opacity="0.9"/>
+          <rect x="13.5" y="0" width="2.5" height="12" rx="1" fill="currentColor"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 全局 Toast -->
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <!-- ==================== 屏幕 1：引导页（选角后进入首页） ==================== -->
+    <section id="screen-onboarding" class="screen">
+      <div class="onboarding-screen">
+        <!-- MINISO 品牌背景动画层 -->
+        <div class="miniso-bg-motion" aria-hidden="true">
+          <div class="glow-ring r1"></div>
+          <div class="glow-ring r2"></div>
+
+          <svg class="float-el float-bag-1" viewBox="0 0 100 110" fill="none">
+            <path d="M33 32V24C33 14.6112 40.6112 7 50 7C59.3888 7 67 14.6112 67 24V32" stroke="white" stroke-width="6" stroke-linecap="round"/>
+            <rect x="14" y="30" width="72" height="72" rx="14" fill="white"/>
+            <text x="50" y="61" text-anchor="middle" fill="#ED1C24" font-size="16" font-weight="900" font-family="sans-serif">MINI</text>
+            <text x="50" y="81" text-anchor="middle" fill="#ED1C24" font-size="18" font-weight="900" font-family="sans-serif">SO</text>
+          </svg>
+
+          <svg class="float-el float-wink-1" viewBox="0 0 100 100" fill="none">
+            <circle cx="50" cy="50" r="44" stroke="white" stroke-width="5"/>
+            <circle cx="35" cy="40" r="5.5" fill="white" class="wink-eye-anim"/>
+            <rect x="57" y="38" width="14" height="5" rx="2.5" fill="white"/>
+            <path d="M32 60C37 70 63 70 68 60" stroke="white" stroke-width="5.5" stroke-linecap="round"/>
+          </svg>
+
+          <svg class="float-el float-box-1" viewBox="0 0 80 80" fill="none">
+            <rect x="12" y="26" width="56" height="44" rx="10" stroke="white" stroke-width="4.5"/>
+            <rect x="8" y="18" width="64" height="14" rx="5" fill="white"/>
+            <path d="M40 18V70" stroke="white" stroke-width="4"/>
+            <circle cx="32" cy="12" r="5" stroke="white" stroke-width="3.5"/>
+            <circle cx="48" cy="12" r="5" stroke="white" stroke-width="3.5"/>
+          </svg>
+
+          <svg class="float-el float-bag-2" viewBox="0 0 100 110" fill="none">
+            <path d="M33 32V24C33 14.6112 40.6112 7 50 7C59.3888 7 67 14.6112 67 24V32" stroke="white" stroke-width="6" stroke-linecap="round"/>
+            <rect x="14" y="30" width="72" height="72" rx="14" stroke="white" stroke-width="5"/>
+          </svg>
+        </div>
+
+        <!-- 上半部分：品牌标语与价值轮播 -->
+        <div class="ob-hero-wrap">
+          <div class="ob-brand-row">
+            <div class="miniso-bag-badge">
+              <div class="miniso-mark">
+                <span>MINI</span>
+                <span>SO</span>
+              </div>
+              <span class="ob-brand-text">名创优品 AI 授课教练</span>
+            </div>
+            <svg width="28" height="28" viewBox="0 0 100 100" fill="none" aria-label="MINISO Wink">
+              <circle cx="50" cy="50" r="44" stroke="white" stroke-width="6"/>
+              <circle cx="35" cy="40" r="6" fill="white"/>
+              <rect x="57" y="37" width="15" height="6" rx="3" fill="white"/>
+              <path d="M32 60C37 70 63 70 68 60" stroke="white" stroke-width="6" stroke-linecap="round"/>
+            </svg>
+          </div>
+
+          <div class="ob-showcase">
+            <div class="ob-slide-card" id="ob-slide-card"></div>
+            <div class="ob-progress-bars">
+              <button type="button" class="ob-bar-btn active" onclick="setSlide(0)" aria-label="引导第1页"><span class="ob-bar-fill"></span></button>
+              <button type="button" class="ob-bar-btn" onclick="setSlide(1)" aria-label="引导第2页"><span class="ob-bar-fill"></span></button>
+              <button type="button" class="ob-bar-btn" onclick="setSlide(2)" aria-label="引导第3页"><span class="ob-bar-fill"></span></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 正下方：横向卡片角色选择器 -->
+        <div class="ob-role-sheet">
+          <div class="ob-sheet-head">
+            <div class="ob-sheet-title">选择您的门店角色</div>
+            <div class="wheel-tip-pill">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="15 18 9 12 15 6"/>
+              </svg>
+              <span>左右滑动或点击</span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </div>
+          </div>
+
+          <div class="wheel-picker-wrap" id="role-wheel-wrap" aria-label="门店角色横向卡片轮播">
+            <div id="role-wheel-slots"></div>
+          </div>
+
+          <div class="wheel-dots" id="role-wheel-dots"></div>
+
+          <div class="ob-user-picker" id="ob-user-picker" aria-label="选择登录用户"></div>
+
+          <button type="button" class="btn-cta" id="ob-enter-btn" onclick="enterHome()">
+            <span>以「门店员工」身份进入首页</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12"/>
+              <polyline points="12 5 19 12 12 19"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 屏幕 2：角色专属首页 ==================== -->
+    <section id="screen-home" class="screen hidden">
+      <div class="home-header">
+        <div class="home-top-row">
+          <div class="home-brand">
+            <span class="home-brand-pill">MINISO</span>
+            <span>产品授课</span>
+          </div>
+          <button type="button" class="switch-role-btn" onclick="backToOnboarding()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="16 3 21 3 21 8"/>
+              <line x1="4" y1="20" x2="21" y2="3"/>
+              <polyline points="21 16 21 21 16 21"/>
+              <line x1="15" y1="15" x2="21" y2="21"/>
+              <line x1="4" y1="4" x2="9" y2="9"/>
+            </svg>
+            <span>切换角色</span>
+          </button>
+        </div>
+
+        <div class="profile-banner" id="home-profile-banner"></div>
+        <div id="home-gamify-strip"></div>
+      </div>
+
+      <div class="home-body" id="home-body"></div>
+    </section>
+
+    <!-- ==================== 屏幕 3：产品细节讲解页（渐进式披露） ==================== -->
+    <section id="screen-detail" class="screen hidden">
+      <div class="tutor-nav">
+        <button type="button" class="icon-btn" onclick="goHomeTab()" aria-label="返回首页">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+        </button>
+        <div class="tutor-nav-title">产品细节讲解</div>
+        <span class="tag-pill" id="detail-nav-tag">IP 爆款必考</span>
+      </div>
+
+      <div class="detail-scroll" id="detail-scroll"></div>
+    </section>
+
+    <!-- ==================== 屏幕 4：虚拟形象语音对练与四维雷达页 ==================== -->
+    <section id="screen-roleplay" class="screen hidden">
+      <div class="tutor-nav">
+        <button type="button" class="icon-btn" onclick="goHomeTab()" aria-label="返回首页">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+        </button>
+        <div class="tutor-nav-title">虚拟形象语音对练</div>
+        <div class="tutor-price" id="roleplay-nav-price">¥59.00</div>
+      </div>
+
+      <div class="sku-switch-strip" id="roleplay-sku-strip"></div>
+      <div id="pane-roleplay" class="avatar-pane"></div>
+    </section>
+
+    <!-- 悬浮式底部导航栏（首页 / AI 对练） -->
+    <nav id="bottom-nav" class="bottom-nav hidden" aria-label="主导航">
+      <button type="button" class="nav-tab active" id="tab-home" onclick="goHomeTab()">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+          <polyline points="9 22 9 12 15 12 15 22"/>
+        </svg>
+        <span>首页</span>
+      </button>
+      <button type="button" class="nav-tab" id="tab-roleplay" onclick="openRoleplay(currentSku.id)">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+        </svg>
+        <span>AI 对练</span>
+      </button>
+    </nav>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
