@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, shallowRef, watch } from 'vue'
+import { computed, onMounted, shallowRef, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ApiClientError, getApiMode } from '@/api/client'
 import * as staffApi from '@/api/staff'
@@ -13,7 +13,7 @@ import {
   setMockNextRoundFault,
   type MockFaultMode,
 } from '@/mock/server'
-import { CHIIKAWA_RUBRIC, M1_SAMPLE_INPUTS } from '@/mock/seed'
+import { M1_SAMPLE_INPUTS } from '@/mock/seed'
 import type {
   CustomerPersona,
   QuestionVariant,
@@ -27,11 +27,13 @@ import { createClientUuid, formatDateTimeLabel } from '@/utils/assignment'
 
 /**
  * 员工文字实战对练页（1:1 复刻 static/index.html #screen-roleplay 原型舞台、复盘与雷达布局）。
- * 保持 M1 契约严谨约束：
- * - 从 POST roleplay-sessions + GET roleplay-sessions/{id} 恢复全部已保存轮次；
- * - 未学完章节返回 409 CHAPTERS_INCOMPLETE 时引导补学，但允许演示试听预览（persisted: false）；
- * - 正式提交绑定 client_round_id 并持久化草稿，503/502/409 失败保留同键供一键重试；
- * - 评分后展示原型同款 .rp-compact-stage + 可折叠「我的回答」+ 雷达卡 + 历史轮次列表。
+ * 保持 M1 契约与多课程隔离约束：
+ * 1. 页面文案（价格、问法、输入提示、课件参考、示范、结果回应）严格绑定当前 assignmentId 的课程版本，
+ *    绝不回退或串用其他商品（如 Chiikawa）的硬编码文本；
+ * 2. 从 POST roleplay-sessions + GET roleplay-sessions/{id} 恢复全部已保存轮次；
+ * 3. 未学完章节返回 409 CHAPTERS_INCOMPLETE 时引导补学，但允许用户输入话术体验「演示试听（persisted: false）」；
+ * 4. 正式提交绑定 client_round_id 并持久化草稿与失败原因，503/502/409 或网络异常刷新后仍保留错误提示、
+ *    「用同一轮次重试评分」与「改写为新一轮」两个恢复动作。
  */
 const route = useRoute()
 const router = useRouter()
@@ -40,6 +42,7 @@ const { showToast } = useToast()
 
 const assignmentId = computed(() => String(route.params.assignmentId ?? ''))
 const isMockMode = getApiMode() === 'mock'
+const answerTextareaRef = useTemplateRef<HTMLTextAreaElement>('answerTextarea')
 
 const detail = shallowRef<StaffAssignmentDetailResponse | null>(null)
 const sessionRef = shallowRef<RoleplaySessionRef | null>(null)
@@ -68,6 +71,9 @@ const submitErrorCode = shallowRef('')
 const submitErrorRequestId = shallowRef('')
 const retryAfterSeconds = shallowRef<number | null>(null)
 
+/** 仅缓存当前任务本次页面交互中服务端返回过的绑定版本示范，切换任务即清空 */
+const boundDemoPitch = shallowRef<string | null>(null)
+
 const activeFormalResult = shallowRef<{
   roundNo: number
   answerText: string
@@ -89,6 +95,16 @@ const draftStorageKey = computed(() => {
 })
 
 const productInfo = computed(() => detail.value?.course_version.content.product)
+const courseChapters = computed(() => detail.value?.course_version.content.chapters ?? [])
+const showMockChiikawaSamples = computed(
+  () => isMockMode && detail.value?.course_version.id === 'crv_chiikawa_v1',
+)
+
+const personaName = computed(() => persona.value?.name || '门店虚拟顾客')
+
+const hasAltQuestion = computed(() =>
+  Boolean(persona.value?.alt_question) || chaptersIncomplete.value,
+)
 
 const currentCustomerQuestion = computed(() => {
   if (persona.value) {
@@ -96,10 +112,24 @@ const currentCustomerQuestion = computed(() => {
       ? persona.value.alt_question
       : persona.value.question
   }
-  return questionVariant.value === 'alt'
-    ? CHIIKAWA_RUBRIC.scenario.alt_question
-    : CHIIKAWA_RUBRIC.scenario.question
+  const productTitle = productInfo.value?.name ? `「${productInfo.value.name}」` : '当前课程'
+  if (questionVariant.value === 'alt') {
+    return `完成全部课程章节后，将加载${productTitle}绑定的换问法顾客提问；您现在可先输入导购话术进行演示试听评分。`
+  }
+  return `完成全部课程章节后，将加载${productTitle}绑定的专属顾客提问；您现在可先输入导购话术进行演示试听评分。`
 })
+
+const answerInputLabel = computed(() =>
+  productInfo.value
+    ? `导购应答话术（${productInfo.value.name} · ${productInfo.value.price}）`
+    : '导购应答话术',
+)
+
+const answerPlaceholder = computed(() =>
+  productInfo.value
+    ? `请输入针对「${productInfo.value.name}」（${productInfo.value.price}）的导购应答话术，建议结合本课核心卖点与合规要求作答...`
+    : '请输入您对当前商品的导购应答话术...',
+)
 
 const hasEvaluationCard = computed(
   () => activeFormalResult.value !== null || activePreviewResult.value !== null,
@@ -116,14 +146,16 @@ const avatarMood = computed<'concern' | 'listening' | 'happy'>(() => {
   return 'concern'
 })
 
+/** 契约未在角色会话接口返回商品特定满意/顾虑口语，统一使用绑定当前商品名的通用回应 */
 const compactReplyText = computed(() => {
+  const productTitle = productInfo.value?.name ? `「${productInfo.value.name}」` : '当前商品'
   const passed =
     activeFormalResult.value?.attempt.passed ??
     activePreviewResult.value?.response.passed ??
     false
   return passed
-    ? CHIIKAWA_RUBRIC.scenario.happy_reply
-    : CHIIKAWA_RUBRIC.scenario.concern_reply
+    ? `顾客对${productTitle}的卖点与价格讲解表示认可，本轮表达已达标。`
+    : `顾客对${productTitle}仍有顾虑，请参考下方评分提示补齐必考事实与合规表达后重试。`
 })
 
 const lastSubmittedAnswer = computed(
@@ -161,20 +193,33 @@ const retrainBanner = computed(() => {
   return null
 })
 
+interface StoredRoleplayDraft {
+  client_round_id?: string
+  answer_text?: string
+  question_variant?: QuestionVariant
+  retry_locked?: boolean
+  submit_error?: string
+  submit_error_code?: string
+  submit_error_request_id?: string
+  retry_after_seconds?: number | null
+}
+
 function saveDraft(): void {
   try {
     if (typeof window === 'undefined' || !window.localStorage) return
-    window.localStorage.setItem(
-      draftStorageKey.value,
-      JSON.stringify({
-        client_round_id: pendingClientRoundId.value,
-        answer_text: answerText.value,
-        question_variant: questionVariant.value,
-        retry_locked: retryLocked.value,
-      }),
-    )
+    const payload: StoredRoleplayDraft = {
+      client_round_id: pendingClientRoundId.value,
+      answer_text: answerText.value,
+      question_variant: questionVariant.value,
+      retry_locked: retryLocked.value,
+      submit_error: retryLocked.value ? submitError.value : '',
+      submit_error_code: retryLocked.value ? submitErrorCode.value : '',
+      submit_error_request_id: retryLocked.value ? submitErrorRequestId.value : '',
+      retry_after_seconds: retryLocked.value ? retryAfterSeconds.value : null,
+    }
+    window.localStorage.setItem(draftStorageKey.value, JSON.stringify(payload))
   } catch {
-    // 忽略本地存储异常
+    // 忽略本地存储写入失败
   }
 }
 
@@ -183,12 +228,7 @@ function restoreDraft(): void {
     if (typeof window === 'undefined' || !window.localStorage) return
     const raw = window.localStorage.getItem(draftStorageKey.value)
     if (!raw) return
-    const parsed = JSON.parse(raw) as {
-      client_round_id?: string
-      answer_text?: string
-      question_variant?: QuestionVariant
-      retry_locked?: boolean
-    }
+    const parsed = JSON.parse(raw) as StoredRoleplayDraft
     if (parsed.client_round_id) {
       pendingClientRoundId.value = parsed.client_round_id
     }
@@ -199,6 +239,13 @@ function restoreDraft(): void {
       questionVariant.value = parsed.question_variant
     }
     retryLocked.value = Boolean(parsed.retry_locked)
+    if (retryLocked.value) {
+      submitError.value = parsed.submit_error ?? ''
+      submitErrorCode.value = parsed.submit_error_code ?? ''
+      submitErrorRequestId.value = parsed.submit_error_request_id ?? ''
+      retryAfterSeconds.value =
+        typeof parsed.retry_after_seconds === 'number' ? parsed.retry_after_seconds : null
+    }
   } catch {
     // 忽略损坏草稿
   }
@@ -207,6 +254,10 @@ function restoreDraft(): void {
 function clearDraftAndRotateId(): void {
   pendingClientRoundId.value = createClientUuid()
   retryLocked.value = false
+  submitError.value = ''
+  submitErrorCode.value = ''
+  submitErrorRequestId.value = ''
+  retryAfterSeconds.value = null
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       window.localStorage.removeItem(draftStorageKey.value)
@@ -216,11 +267,68 @@ function clearDraftAndRotateId(): void {
   }
 }
 
+function resetViewStateForAssignmentSwitch(): void {
+  detail.value = null
+  sessionRef.value = null
+  persona.value = null
+  rounds.value = []
+  chaptersIncomplete.value = false
+  missingChapters.value = []
+  questionVariant.value = 'default'
+  answerText.value = ''
+  pendingClientRoundId.value = createClientUuid()
+  retryLocked.value = false
+  submitError.value = ''
+  submitErrorCode.value = ''
+  submitErrorRequestId.value = ''
+  retryAfterSeconds.value = null
+  boundDemoPitch.value = null
+  activeFormalResult.value = null
+  activePreviewResult.value = null
+  showUserTranscript.value = false
+  showSamplesBar.value = false
+}
+
 async function refreshRoundsIfReady(): Promise<void> {
   if (!sessionRef.value) return
   const sessionData = await staffApi.getRoleplaySession(sessionRef.value.id)
   sessionRef.value = sessionData.session
   rounds.value = sessionData.rounds
+}
+
+/**
+ * 将本地恢复的草稿与服务端真实已保存轮次对账：
+ * - 若该 client_round_id 已评分完成，自动解除锁定并轮换新键；
+ * - 若对应轮次仍为 failed/scoring 或处于锁定态，保证同时展示失败原因、原轮重试与改写新一轮两个入口。
+ */
+function reconcileDraftWithRounds(): void {
+  const matchedRound = rounds.value.find(
+    (r) => r.client_round_id === pendingClientRoundId.value,
+  )
+
+  if (matchedRound?.status === 'scored') {
+    clearDraftAndRotateId()
+    answerText.value = ''
+    return
+  }
+
+  if (matchedRound && (matchedRound.status === 'failed' || matchedRound.status === 'scoring')) {
+    retryLocked.value = true
+    answerText.value = matchedRound.answer_text
+    questionVariant.value = matchedRound.question_variant
+    if (!submitError.value) {
+      submitErrorCode.value = matchedRound.failure_code ?? matchedRound.status.toUpperCase()
+      submitError.value =
+        matchedRound.status === 'scoring'
+          ? `第 ${matchedRound.round_no} 轮仍在评分或尚未落库（SCORING_IN_PROGRESS），可用原轮次键重试或改写为新一轮`
+          : `第 ${matchedRound.round_no} 轮评分失败（${matchedRound.failure_code ?? 'FAILED'}），可用原轮次键重试或改写为新一轮`
+    }
+    return
+  }
+
+  if (retryLocked.value && !submitError.value) {
+    submitError.value = '上次正式提交未收到评分结果，可保留原轮次键重试或改写为新一轮'
+  }
 }
 
 async function loadRoleplayWorkspace(): Promise<void> {
@@ -247,6 +355,7 @@ async function loadRoleplayWorkspace(): Promise<void> {
         const missing = err.details?.missing_chapters
         missingChapters.value = Array.isArray(missing) ? missing.map(String) : []
         sessionRef.value = null
+        persona.value = null
         rounds.value = []
       } else {
         throw err
@@ -254,12 +363,7 @@ async function loadRoleplayWorkspace(): Promise<void> {
     }
 
     restoreDraft()
-    const matchedRound = rounds.value.find(
-      (r) => r.client_round_id === pendingClientRoundId.value,
-    )
-    if (matchedRound?.status === 'scored') {
-      clearDraftAndRotateId()
-    }
+    reconcileDraftWithRounds()
   } catch (err) {
     if (err instanceof ApiClientError) {
       loadErrorCode.value = err.code
@@ -278,10 +382,9 @@ async function loadRoleplayWorkspace(): Promise<void> {
 
 function handleStartFreshDraft(): void {
   clearDraftAndRotateId()
-  submitError.value = ''
-  submitErrorCode.value = ''
-  submitErrorRequestId.value = ''
-  retryAfterSeconds.value = null
+  // 保留当前文本框内容供用户在此基础上改写，同时同步清理本地草稿锁定标记
+  saveDraft()
+  answerTextareaRef.value?.focus()
 }
 
 function handleClearForNextRound(): void {
@@ -289,12 +392,42 @@ function handleClearForNextRound(): void {
   activePreviewResult.value = null
   showUserTranscript.value = false
   answerText.value = ''
-  handleStartFreshDraft()
+  clearDraftAndRotateId()
+}
+
+function handleFillCourseSpeech(): void {
+  if (retryLocked.value) {
+    showToast('当前轮次处于待重试锁定态，请先点击「改写为新一轮」后再替换内容')
+    return
+  }
+  const speech = courseChapters.value
+    .map((ch) => ch.speech.trim())
+    .filter(Boolean)
+    .join(' ')
+  if (!speech) {
+    showToast('当前课程暂无可填入的课件参考话术')
+    return
+  }
+  answerText.value = speech
+  saveDraft()
+  showToast('已填入当前绑定课程版本的课件参考话术')
+}
+
+function handleFillBoundDemoPitch(): void {
+  if (retryLocked.value) {
+    showToast('当前轮次处于待重试锁定态，请先点击「改写为新一轮」后再替换内容')
+    return
+  }
+  if (!boundDemoPitch.value) return
+  answerText.value = boundDemoPitch.value
+  saveDraft()
+  showToast('已填入本课绑定版本的金牌示范')
 }
 
 function handleApplySample(key: keyof typeof M1_SAMPLE_INPUTS): void {
+  if (!showMockChiikawaSamples.value) return
   if (retryLocked.value) {
-    handleStartFreshDraft()
+    clearDraftAndRotateId()
   }
   answerText.value = M1_SAMPLE_INPUTS[key]
   saveDraft()
@@ -304,7 +437,7 @@ function handleApplySample(key: keyof typeof M1_SAMPLE_INPUTS): void {
 function handleToggleQuestionVariant(): void {
   if (retryLocked.value) {
     showToast('当前轮次待重试，切换问法将开启新轮次')
-    handleStartFreshDraft()
+    clearDraftAndRotateId()
   }
   questionVariant.value = questionVariant.value === 'default' ? 'alt' : 'default'
   activeFormalResult.value = null
@@ -313,8 +446,8 @@ function handleToggleQuestionVariant(): void {
   saveDraft()
   showToast(
     questionVariant.value === 'alt'
-      ? '已切换为「换问法复练」顾客提问'
-      : '已切回「原问法」顾客提问',
+      ? '已切换为「换问法复练」视角'
+      : '已切回「原问法」视角',
   )
 }
 
@@ -345,6 +478,7 @@ async function submitWithClientRound(params: {
       question_variant: params.variant,
     })
 
+    boundDemoPitch.value = res.attempt.demo_pitch || boundDemoPitch.value
     activePreviewResult.value = null
     activeFormalResult.value = {
       roundNo: res.round.round_no,
@@ -383,12 +517,6 @@ async function submitWithClientRound(params: {
     }
   } catch (err) {
     retryLocked.value = true
-    saveDraft()
-    try {
-      await refreshRoundsIfReady()
-    } catch {
-      // 忽略刷新失败
-    }
     if (err instanceof ApiClientError) {
       submitErrorCode.value = err.code
       submitErrorRequestId.value = err.requestId
@@ -397,6 +525,12 @@ async function submitWithClientRound(params: {
       retryAfterSeconds.value = typeof retrySec === 'number' ? retrySec : null
     } else {
       submitError.value = '提交评分失败，请保持同一轮次重试'
+    }
+    saveDraft()
+    try {
+      await refreshRoundsIfReady()
+    } catch {
+      // 忽略刷新失败，保留已持久化的报错信息
     }
   } finally {
     submittingFormal.value = false
@@ -410,6 +544,7 @@ async function handleSubmitFormal(): Promise<void> {
   const text = answerText.value.trim()
   if (!text) {
     showToast('请先输入导购话术内容')
+    answerTextareaRef.value?.focus()
     return
   }
   saveDraft()
@@ -432,9 +567,12 @@ async function handleRetrySavedRound(round: RoleplayRoundItem): Promise<void> {
 
 async function handleSubmitPreview(): Promise<void> {
   if (submittingPreview.value) return
-  const text = answerText.value.trim() || CHIIKAWA_RUBRIC.demo_pitch
-  if (!answerText.value.trim()) {
-    answerText.value = text
+  const text = answerText.value.trim()
+  if (!text) {
+    // 空白点击演示试听绝不注入其他商品默认文本，避免串用他品话术
+    showToast('请先输入导购话术，或先点「填入本课课件话术」再试听')
+    answerTextareaRef.value?.focus()
+    return
   }
   submittingPreview.value = true
   submitError.value = ''
@@ -443,6 +581,7 @@ async function handleSubmitPreview(): Promise<void> {
       answer_text: text,
       question_variant: questionVariant.value,
     })
+    boundDemoPitch.value = previewRes.demo_pitch || boundDemoPitch.value
     activeFormalResult.value = null
     activePreviewResult.value = {
       answerText: text,
@@ -472,8 +611,7 @@ function goCourse(): void {
 }
 
 watch(assignmentId, () => {
-  activeFormalResult.value = null
-  activePreviewResult.value = null
+  resetViewStateForAssignmentSwitch()
   void loadRoleplayWorkspace()
 })
 
@@ -488,7 +626,7 @@ onMounted(() => {
     :show-bottom-nav="true"
     :roleplay-assignment-id="assignmentId"
   >
-    <!-- 顶部导航（复刻原型 .tutor-nav + .tutor-price） -->
+    <!-- 顶部导航（显示当前任务绑定课程价格，不设他品默认值） -->
     <header class="tutor-nav">
       <button type="button" class="icon-btn" aria-label="返回课程学习" @click="goCourse">
         <svg
@@ -506,10 +644,12 @@ onMounted(() => {
         </svg>
       </button>
       <div class="tutor-nav-title">AI 情景文字对练</div>
-      <div class="tutor-price">{{ productInfo?.price ?? '¥59.00' }}</div>
+      <div class="tutor-price" data-testid="roleplay-nav-price">
+        {{ productInfo?.price || '—' }}
+      </div>
     </header>
 
-    <!-- 商品切换条（复刻原型 .sku-switch-strip） -->
+    <!-- 当前绑定商品标签条 -->
     <div v-if="productInfo" class="sku-switch-strip">
       <button type="button" class="sku-pill-btn active" @click="goCourse">
         {{ productInfo.name }}
@@ -567,7 +707,7 @@ onMounted(() => {
           </button>
         </div>
 
-        <!-- 3. 评分复盘态（复刻原型 .rp-compact-stage + 可展开我的回答 + .radar-card） -->
+        <!-- 3. 评分复盘态（顾客通用反馈 + 可展开我的回答 + 雷达卡） -->
         <template v-if="hasEvaluationCard">
           <div class="rp-compact-stage">
             <div class="rp-mini-avatar">
@@ -579,9 +719,7 @@ onMounted(() => {
             </div>
             <div class="rp-mini-info">
               <div class="rp-mini-head">
-                <span class="persona-pill">{{
-                  persona?.name ?? CHIIKAWA_RUBRIC.scenario.persona_name
-                }}</span>
+                <span class="persona-pill">{{ personaName }}</span>
                 <span
                   class="status-badge"
                   :class="avatarMood === 'happy' ? 'status-ok' : 'status-warn'"
@@ -589,7 +727,9 @@ onMounted(() => {
                   {{ avatarMood === 'happy' ? '认可满意' : '犹豫顾虑中' }}
                 </span>
               </div>
-              <div class="rp-mini-reply">{{ compactReplyText }}</div>
+              <div class="rp-mini-reply" data-testid="compact-customer-reply">
+                {{ compactReplyText }}
+              </div>
             </div>
             <button
               type="button"
@@ -624,11 +764,11 @@ onMounted(() => {
           />
         </template>
 
-        <!-- 4. 虚拟顾客拟人舞台（复刻原型 .avatar-stage + 脉冲光环） -->
+        <!-- 4. 虚拟顾客拟人舞台 -->
         <section class="avatar-stage">
           <div class="avatar-top-row">
             <div class="persona-pill">
-              <span>{{ persona?.name ?? CHIIKAWA_RUBRIC.scenario.persona_name }}</span>
+              <span data-testid="customer-persona-name">{{ personaName }}</span>
               <span
                 class="status-badge"
                 :class="avatarMood === 'listening' ? 'status-ok' : 'status-warn'"
@@ -644,6 +784,7 @@ onMounted(() => {
             </div>
             <div class="audio-ctrl-group">
               <button
+                v-if="hasAltQuestion"
                 type="button"
                 class="mini-icon-pill"
                 data-testid="toggle-variant-btn"
@@ -674,45 +815,58 @@ onMounted(() => {
           <div class="avatar-subtitle">
             <div class="avatar-reply-tag">
               {{
-                questionVariant === 'alt'
-                  ? '换问法复练 · 同一考点不同问法'
-                  : '虚拟顾客提问'
+                chaptersIncomplete
+                  ? '对练预览说明（待解锁顾客场景）'
+                  : questionVariant === 'alt'
+                    ? '换问法复练 · 同一考点不同问法'
+                    : '虚拟顾客提问'
               }}
             </div>
             <div data-testid="customer-question-text">{{ currentCustomerQuestion }}</div>
           </div>
         </section>
 
-        <!-- 5. 底部对练输入与操作面板（复刻原型 .voice-dock 造型） -->
+        <!-- 5. 底部对练输入与操作面板 -->
         <section class="voice-dock">
+          <label for="roleplay-answer-input" class="dock-label">
+            {{ answerInputLabel }}
+          </label>
           <textarea
+            id="roleplay-answer-input"
+            ref="answerTextarea"
             v-model="answerText"
             class="dock-textarea"
             rows="3"
             :disabled="submittingFormal || retryLocked"
-            placeholder="输入你的导购应答话术（需讲清 59 元、正版联名授权、端盒 6 个不重复）..."
+            :placeholder="answerPlaceholder"
             data-testid="roleplay-answer-input"
             @input="saveDraft"
           />
 
+          <!-- 失败/锁定恢复横幅：刷新后亦同时展示失败说明、「用同一轮次重试评分」与「改写为新一轮」 -->
           <div
-            v-if="submitError"
+            v-if="submitError || retryLocked"
             class="error-banner"
             role="alert"
             data-testid="roleplay-submit-error"
           >
-            <div class="error-banner-head">{{ submitError }}</div>
+            <div class="error-banner-head">
+              {{ submitError || '上次提交尚未完成评分，可继续用原轮次重试或改写为新一轮' }}
+            </div>
             <div v-if="retryAfterSeconds" class="error-sub-hint">
               建议等待 {{ retryAfterSeconds }} 秒后重试或刷新恢复会话
             </div>
-            <div v-if="submitErrorRequestId" class="error-request-id">
-              request_id: {{ submitErrorRequestId }} · client_round_id: {{ pendingClientRoundId }}
+            <div class="error-request-id">
+              <template v-if="submitErrorRequestId">
+                request_id: {{ submitErrorRequestId }} ·
+              </template>
+              client_round_id: {{ pendingClientRoundId }}
             </div>
             <div v-if="retryLocked" class="retry-actions">
               <button
                 type="button"
                 class="btn-pill-red"
-                :disabled="submittingFormal"
+                :disabled="submittingFormal || chaptersIncomplete"
                 data-testid="retry-same-round-btn"
                 @click="handleSubmitFormal"
               >
@@ -722,6 +876,7 @@ onMounted(() => {
                 type="button"
                 class="btn-pill-soft"
                 :disabled="submittingFormal"
+                data-testid="rewrite-new-round-btn"
                 @click="handleStartFreshDraft"
               >
                 改写为新一轮
@@ -750,7 +905,15 @@ onMounted(() => {
               <line x1="22" y1="2" x2="11" y2="13" />
               <polygon points="22 2 15 22 11 13 2 9 22 2" />
             </svg>
-            <span>{{ submittingFormal ? 'AI 核验评分中...' : '提交正式话术评分' }}</span>
+            <span>
+              {{
+                submittingFormal
+                  ? 'AI 核验评分中...'
+                  : retryLocked
+                    ? '用当前原轮次重试评分'
+                    : '提交正式话术评分'
+              }}
+            </span>
           </button>
 
           <div class="voice-quick-row">
@@ -764,6 +927,27 @@ onMounted(() => {
               {{ submittingPreview ? '试听评分中...' : '演示试听（不计分）' }}
             </button>
             <button
+              v-if="courseChapters.length > 0"
+              type="button"
+              class="voice-chip-btn"
+              :disabled="retryLocked"
+              data-testid="fill-course-speech-btn"
+              @click="handleFillCourseSpeech"
+            >
+              填入本课课件话术
+            </button>
+            <button
+              v-if="boundDemoPitch"
+              type="button"
+              class="voice-chip-btn"
+              :disabled="retryLocked"
+              data-testid="fill-bound-demo-btn"
+              @click="handleFillBoundDemoPitch"
+            >
+              填入本课金牌示范
+            </button>
+            <button
+              v-if="showMockChiikawaSamples"
               type="button"
               class="voice-chip-btn"
               data-testid="toggle-samples-btn"
@@ -773,7 +957,11 @@ onMounted(() => {
             </button>
           </div>
 
-          <div v-if="showSamplesBar" class="samples-bar" data-testid="samples-bar">
+          <div
+            v-if="showMockChiikawaSamples && showSamplesBar"
+            class="samples-bar"
+            data-testid="samples-bar"
+          >
             <button type="button" class="sample-chip" @click="handleApplySample('correct')">
               高分示范（99分）
             </button>
@@ -1211,6 +1399,12 @@ onMounted(() => {
   box-shadow: var(--shadow-sm);
 }
 
+.dock-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
 .dock-textarea {
   width: 100%;
   border: 1.5px solid var(--border);
@@ -1227,6 +1421,11 @@ onMounted(() => {
 .dock-textarea:focus {
   border-color: var(--red);
   background: #ffffff;
+}
+
+.dock-textarea:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
 }
 
 .mic-main-btn {
@@ -1260,7 +1459,7 @@ onMounted(() => {
 
 .voice-chip-btn {
   flex: 1;
-  min-width: 90px;
+  min-width: 96px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);

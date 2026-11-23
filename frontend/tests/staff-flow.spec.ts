@@ -66,7 +66,13 @@ describe('员工端完整路径组件集成测试', () => {
     await waitForSelector(wrapper, '[data-testid="preview-submit-btn"]')
     expect(router.currentRoute.value.name).toBe('staff-roleplay')
 
-    // 4. 测试演示试听（persisted: false）不写入已保存轮次
+    // 4. 测试演示试听（persisted: false）：空白时不注入他品话术，填入本课课件后试听不写入正式轮次
+    await wrapper.get('[data-testid="preview-submit-btn"]').trigger('click')
+    await flushPromises()
+    expect((wrapper.get('[data-testid="roleplay-answer-input"]').element as HTMLTextAreaElement).value).toBe('')
+    expect(wrapper.find('[data-testid="preview-banner"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="fill-course-speech-btn"]').trigger('click')
     await wrapper.get('[data-testid="preview-submit-btn"]').trigger('click')
     await waitForSelector(wrapper, '[data-testid="preview-banner"]')
     expect(wrapper.get('[data-testid="preview-banner"]').text()).toContain('演示试听')
