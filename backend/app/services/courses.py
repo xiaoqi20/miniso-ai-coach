@@ -519,6 +519,19 @@ async def publish_version(
             await session.scalar(
                 select(Course.id).where(Course.id == course_id).with_for_update()
             )
+            # 首次快照读取可能发生在同键事务提交前，等待课程锁期间原事务
+            # 可能已完成并被新版本替代。此时必须用锁定读复查幂等记录，
+            # 否则会把成功的原发布误判为 superseded / STATE_CONFLICT。
+            replay = await replay_or_clear(
+                session,
+                user_id=user_id,
+                route=route,
+                key_hash=key_hash,
+                request_hash=request_hash,
+                lock=True,
+            )
+            if replay is not None:
+                return replay
             version = await session.scalar(
                 select(CourseVersion)
                 .where(CourseVersion.id == version_id)

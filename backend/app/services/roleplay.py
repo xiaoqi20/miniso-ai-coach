@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -53,6 +53,32 @@ SCORING_TIMEOUT_SECONDS = 10
 SCORING_LEASE_SECONDS = 30
 
 
+def _holds_scoring_lease(
+    roleplay_round: RoleplayRound,
+    lease_started_at: datetime | None,
+) -> bool:
+    """租约被新请求接管后，过期请求不得再修改轮次。"""
+    if lease_started_at is None or roleplay_round.scoring_started_at is None:
+        return False
+    # 数据库按 DATETIME(3) 存储，用统一的毫秒表示比较。
+    return iso_utc(roleplay_round.scoring_started_at) == iso_utc(
+        lease_started_at
+    )
+
+
+def _lease_conflict(roleplay_round: RoleplayRound) -> ApiError:
+    return ApiError(
+        409,
+        "SCORING_IN_PROGRESS",
+        "该轮次已由新的评分请求接管",
+        {
+            "round_no": roleplay_round.round_no,
+            "client_round_id": roleplay_round.client_round_id,
+            "status": roleplay_round.status.value,
+        },
+    )
+
+
 async def _score_with_timeout(
     rubric: dict[str, Any],
     question_variant: str,
@@ -82,6 +108,8 @@ class _RoundWork:
     required_chapters: int
     rubric_rules: dict[str, Any]
     replayed: bool
+    # 本次评分认领写入 scoring_started_at 的时间；写成绩/失败前必须仍匹配。
+    lease_started_at: datetime | None = None
 
 
 async def _load_assignment(
@@ -425,6 +453,7 @@ async def _prepare_round(
                     required_chapters=required_chapters,
                     rubric_rules=rubric.rules,
                     replayed=False,
+                    lease_started_at=now,
                 )
             if existing.status is not RoundStatus.failed:
                 raise ApiError(500, "INTERNAL_ERROR", "轮次状态异常")
@@ -449,6 +478,7 @@ async def _prepare_round(
                 required_chapters=required_chapters,
                 rubric_rules=rubric.rules,
                 replayed=False,
+                lease_started_at=now,
             )
 
         question_text = _question_text(rubric, body.question_variant)
@@ -483,11 +513,15 @@ async def _prepare_round(
             required_chapters=required_chapters,
             rubric_rules=rubric.rules,
             replayed=False,
+            lease_started_at=now,
         )
 
 
 async def _mark_round_failed(
-    session: AsyncSession, round_id: str, failure_code: str
+    session: AsyncSession,
+    round_id: str,
+    failure_code: str,
+    lease_started_at: datetime | None,
 ) -> None:
     async with session.begin():
         roleplay_round = await session.scalar(
@@ -497,6 +531,9 @@ async def _mark_round_failed(
         )
         if roleplay_round is None or roleplay_round.status is not RoundStatus.scoring:
             return
+        if not _holds_scoring_lease(roleplay_round, lease_started_at):
+            # 新请求已接管租约，旧请求的失败不能覆盖当前评分。
+            raise _lease_conflict(roleplay_round)
         roleplay_round.status = RoundStatus.failed
         roleplay_round.failure_code = failure_code
         roleplay_round.scored_at = utcnow()
@@ -549,6 +586,9 @@ async def _persist_attempt(
             return True
         if roleplay_round.status is not RoundStatus.scoring:
             raise ApiError(409, "STATE_CONFLICT", "当前轮次状态不允许写入成绩")
+        if not _holds_scoring_lease(roleplay_round, work.lease_started_at):
+            # 租约已被接管，旧请求算出的成绩不得落库。
+            raise _lease_conflict(roleplay_round)
 
         assignment = await session.scalar(
             select(Assignment)
@@ -723,6 +763,7 @@ async def submit_round(
             session,
             work.round_id,
             "RUBRIC_INCOMPATIBLE",
+            work.lease_started_at,
         )
         raise ApiError(
             exc.status_code,
@@ -747,6 +788,7 @@ async def submit_round(
             session,
             work.round_id,
             "SCORING_UNAVAILABLE",
+            work.lease_started_at,
         )
         raise ApiError(
             503,
@@ -763,6 +805,7 @@ async def submit_round(
             session,
             work.round_id,
             "SCORING_INVALID_OUTPUT",
+            work.lease_started_at,
         )
         raise ApiError(
             502,

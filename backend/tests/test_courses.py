@@ -28,6 +28,7 @@ from app.seed_data import (
     RUBRIC_RULES,
     RUBRIC_VERSION_ID,
 )
+from app.services import courses as courses_service
 from tests.conftest import login
 from tests.helpers import (
     course_payload,
@@ -318,6 +319,54 @@ async def test_publish_idempotency_and_validation(client, app):
     async with app.state.db.sessionmaker() as session:
         count = await session.scalar(select(func.count()).select_from(Release))
     assert count == 1
+
+
+async def test_same_key_retry_after_supersede_replays_original(
+    client, app, monkeypatch
+):
+    await login(client, "usr_linmin")
+    assert (await review_version(client)).status_code == 200
+    first = await publish_version(client, key="retry-race")
+    assert first.status_code == 201, first.text
+    first_release_id = first.json()["release"]["id"]
+
+    cloned = await client.post(
+        f"/api/v1/hq/courses/{COURSE_ID}/versions",
+        json={"source_version_id": COURSE_VERSION_ID},
+    )
+    assert cloned.status_code == 201, cloned.text
+    v2 = cloned.json()["version"]["id"]
+    assert (await review_version(client, v2)).status_code == 200
+    superseded = await publish_version(client, v2, key="supersede-v1")
+    assert superseded.status_code == 201, superseded.text
+
+    async with app.state.db.sessionmaker() as session:
+        v1 = await session.get(CourseVersion, COURSE_VERSION_ID)
+    assert v1.status is CourseVersionStatus.superseded
+
+    original = courses_service.replay_or_clear
+    calls = 0
+
+    async def first_lookup_misses(*args, **kwargs):
+        # 模拟 REPEATABLE READ 首次快照看不到并行事务刚提交的幂等记录。
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(courses_service, "replay_or_clear", first_lookup_misses)
+    retried = await publish_version(client, COURSE_VERSION_ID, key="retry-race")
+    assert retried.status_code == 201, retried.text
+    assert retried.headers["Idempotent-Replay"] == "true"
+    assert retried.json()["release"]["id"] == first_release_id
+    assert calls >= 2
+
+    async with app.state.db.sessionmaker() as session:
+        release_count = await session.scalar(
+            select(func.count()).select_from(Release)
+        )
+    assert release_count == 2
 
 
 async def test_version_clone_update_and_supersede(client, app):

@@ -76,3 +76,29 @@
   - 预置 `affinity→service` 规则：创建 `422`；审校和发布各 `422 VALIDATION_ERROR`，发布不生成批次。
   - 临时 MySQL 容器已停止并自动移除；没有改动前端。
 - 交接：正式评分前的规则复检和租约恢复见 [T004 返工记录](T004-roleplay.md#qodercn-返工记录--2026-11-23)。
+
+## Codex 复验 · 2026-11-23
+
+**未通过，退回 QoderCN 返工。** 复验基线为 `qoder` 与 `origin/qoder` 上的 `0b809f6`。
+
+- 72 项后端测试通过。独立使用 MySQL 8.4.13 验证同课程不同版本并发发布均返回 `201`，最终只保留一个 `published` 版本。两个批次各有 3 人应训和 1 条发布审计。单独测试同键并发时，只新增 1 个批次并正确重放。
+- 固定 `.123900Z` 亚毫秒时间，首次章节完成、立即重放和任务详情均返回 `.123Z`。重放保持 `state_version` 不变。将 `affinity` 改为 `service` 的规则在创建、改稿、审校、发布均返回 `422`，未生成批次。
+- **P2 · 版本切换与同键重放并发时违反 M1 §6.3。** 让版本 A 的同键重试在首次事务提交前查不到幂等记录。随后提交 A 的首次发布，再发布版本 B 并替代 A。恢复重试后，返回 `409 STATE_CONFLICT`，`current_status=superseded`。两个发布请求均为 `201`，事后再次用原键请求 A 则能重放原批次。当前流程在锁前查幂等，锁后先校验版本状态，早退时走不到唯一键冲突的重放分支。[幂等检查](../../../backend/app/services/courses.py#L499) · [状态检查](../../../backend/app/services/courses.py#L529)
+- 复验条件是在 MySQL 8.4 按上述时序执行三个请求。仅创建 A、B 各一个发布批次，A 的同键重试返回原批次与 `Idempotent-Replay: true`。加测同键不同请求体仍返回 `409 IDEMPOTENCY_KEY_REUSED`，以及上次的并发发布、时间和规则回归。
+
+## QoderCN 二次返工记录 · 2026-11-23
+
+- 认领：2026-11-23，QoderCN，`qoder`。
+- 返工变更：
+  - `backend/app/services/idempotency.py`：`replay_or_clear` 增加 `lock` 参数；锁定读用于绕过 REPEATABLE READ 首次快照。
+  - `backend/app/services/courses.py`：取得课程锁后、校验版本状态前，再次用锁定读检查幂等记录；命中时直接返回原批次。
+  - `backend/tests/test_courses.py`：模拟首次快照未命中、版本 A 已被 B 替代的场景，断言 A 的同键重试重放原批次且不新增发布。
+  - `backend/README.md`：补充同键重试与并发说明。
+- 验证命令与结果：
+  - `cd backend && uv run pytest -q`：**75 passed**。
+  - `uv run python -m compileall -q app tests alembic`：通过；改动文件 E/F lint 通过。
+  - Docker `mysql:8.4.13`：发布 A、克隆并发布 B 替代 A；强制首次幂等查询未命中后，用原键重试 A 返回 `201`、原 `release_id` 和 `Idempotent-Replay: true`，发布批次仍为 2。
+  - 同一键改为不同门店请求体：`409 IDEMPOTENCY_KEY_REUSED`；没有新增批次。
+  - 上次的并发发布、章节毫秒时间和规则校验回归继续通过；本次没有新增 DDL。
+  - 临时 MySQL 8.4 容器已停止并自动移除。
+- 提交：本次返工提交到 `qoder`；未改动前端。

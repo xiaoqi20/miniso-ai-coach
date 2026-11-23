@@ -6,8 +6,8 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | [T001](tasks/T001-contract.md) | 身份、业务状态及接口契约 | — | 已完成 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | v1.0 契约已验收，已纳入 qoder 基线；原型重构与 AGENTS/skills 未包含 |
 | [T002](tasks/T002-backend-foundation.md) | 后端、数据库及会话底座 | T001 | 已完成 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | `3bc9489` 已纳入 qoder 基线；Codex 独立复跑 32 项测试及 MySQL 8.4.13，四项返工通过 |
-| [T003](tasks/T003-course-delivery.md) | 审校发布与员工学习 API | T002 | 待验收 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | 返工完成：72 项测试通过；MySQL 8.4.13 验证并发发布无死锁、章节时间毫秒一致、不兼容规则被审校/发布拒绝，详见任务卡 |
-| [T004](tasks/T004-roleplay.md) | 对练、评分及复练回写 | T002 | 待验收 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | 返工完成：评分租约恢复、不兼容规则定义错误；MySQL 8.4.13 实测 30 秒租约到期后同键恢复且仅一条成绩，详见任务卡 |
+| [T003](tasks/T003-course-delivery.md) | 审校发布与员工学习 API | T002 | 待验收 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | 二次返工完成：取得课程锁后锁定读复查幂等记录；75 项测试通过，MySQL 8.4.13 验证被替代版本的同键重试返回原批次，详见任务卡 |
+| [T004](tasks/T004-roleplay.md) | 对练、评分及复练回写 | T002 | 待验收 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | 二次返工完成：写成绩和失败状态均校验租约认领；75 项测试通过，MySQL 8.4.13 验证接管后旧请求不能写入且新请求可完成同一轮，详见任务卡 |
 | [T005](tasks/T005-store-review.md) | 店长补训、复查及统计 API | T002 | 待领取 | 开放 | — | — | 2026-11-23 | T002 已验收 |
 | [T006](tasks/T006-employee-h5.md) | Vue 公共入口与员工 H5 | T001 | 待领取 | Antigravity App 专属 | — | — | 2026-11-23 | T001 已验收；仅 Antigravity App 可领取 |
 | [T007](tasks/T007-operations-ui.md) | 总部 PC 与店长 H5 | T006 | 排队 | Antigravity App 专属 | — | — | — | — |

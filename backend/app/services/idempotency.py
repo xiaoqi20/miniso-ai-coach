@@ -66,15 +66,21 @@ async def replay_or_clear(
     route: str,
     key_hash: str,
     request_hash: str,
+    lock: bool = False,
 ) -> JSONResponse | None:
-    """命中未过期记录时返回重放响应；过期记录清除后按新请求处理。"""
-    record = await session.scalar(
-        select(IdempotencyRecord).where(
-            IdempotencyRecord.user_id == user_id,
-            IdempotencyRecord.route == route,
-            IdempotencyRecord.key_hash == key_hash,
-        )
+    """命中未过期记录时返回重放响应；过期记录清除后按新请求处理。
+
+    lock=True 使用锁定读（current read），用于拿到业务锁后复查：普通读在
+    REPEATABLE READ 下仍看首次快照，无法发现等待期间刚提交的同键记录。
+    """
+    stmt = select(IdempotencyRecord).where(
+        IdempotencyRecord.user_id == user_id,
+        IdempotencyRecord.route == route,
+        IdempotencyRecord.key_hash == key_hash,
     )
+    if lock:
+        stmt = stmt.with_for_update()
+    record = await session.scalar(stmt)
     if record is None:
         return None
     if record.expires_at <= utcnow():

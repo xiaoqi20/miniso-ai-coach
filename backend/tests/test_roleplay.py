@@ -2,6 +2,7 @@ import asyncio
 from datetime import timedelta
 from uuid import uuid4
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
@@ -529,6 +530,86 @@ async def test_stale_scoring_round_is_reclaimed(client, app):
     assert replay.status_code == 201
     assert replay.json()["replayed"] is True
     assert replay.json()["attempt"]["attempt_id"] == attempt_id
+
+
+@pytest.mark.parametrize("mode", ["failure", "success"])
+async def test_stale_claim_cannot_write_after_takeover(
+    client, app, monkeypatch, mode
+):
+    assignment_id = await _ready_assignment(client)
+    created = await _create_session(client, assignment_id)
+    session_id = created["session"]["id"]
+    client_round_id = str(uuid4())
+    payload = _round_payload(client_round_id, CORRECT)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original = roleplay_service.score_answer
+
+    async def blocked_score(*args, **kwargs):
+        started.set()
+        await release.wait()
+        if mode == "failure":
+            raise ScoringUnavailableError("late failure")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(roleplay_service, "score_answer", blocked_score)
+    request = asyncio.create_task(
+        client.post(
+            f"/api/v1/staff/roleplay-sessions/{session_id}/rounds",
+            json=payload,
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=3)
+        async with app.state.db.sessionmaker() as session:
+            roleplay_round = await session.scalar(
+                select(RoleplayRound).where(
+                    RoleplayRound.client_round_id == client_round_id
+                )
+            )
+            # 模拟租约到期后新请求接管；旧请求仍持有原来的认领时间。
+            roleplay_round.scoring_started_at = utcnow() + timedelta(seconds=5)
+            await session.commit()
+    finally:
+        release.set()
+
+    stale = await request
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["error"]["code"] == "SCORING_IN_PROGRESS"
+
+    async with app.state.db.sessionmaker() as session:
+        roleplay_round = await session.scalar(
+            select(RoleplayRound).where(
+                RoleplayRound.client_round_id == client_round_id
+            )
+        )
+        attempt_count = await session.scalar(
+            select(func.count()).select_from(RoleplayAttempt)
+        )
+    assert roleplay_round.status is RoundStatus.scoring
+    assert attempt_count == 0
+
+    monkeypatch.setattr(roleplay_service, "score_answer", original)
+    async with app.state.db.sessionmaker() as session:
+        roleplay_round = await session.scalar(
+            select(RoleplayRound).where(
+                RoleplayRound.client_round_id == client_round_id
+            )
+        )
+        roleplay_round.scoring_started_at = utcnow() - timedelta(seconds=31)
+        await session.commit()
+
+    resumed = await client.post(
+        f"/api/v1/staff/roleplay-sessions/{session_id}/rounds",
+        json=payload,
+    )
+    assert resumed.status_code == 201, resumed.text
+    assert resumed.json()["attempt"]["total"] == 99
+    async with app.state.db.sessionmaker() as session:
+        attempt_count = await session.scalar(
+            select(func.count()).select_from(RoleplayAttempt)
+        )
+    assert attempt_count == 1
 
 
 async def test_incompatible_rubric_returns_defined_errors(client, app):

@@ -83,3 +83,28 @@
   - 审校/发布复检：同一不兼容规则分别返回 `422`，不生成发布批次。
   - 新迁移使 T003/T004 产生 DDL，已在上表登记；临时 MySQL 8.4 容器已停止并自动移除。
 - 未验证：前端 T006/T007；真实模型提供方。M1 仍使用确定性替身。
+
+## Codex 复验 · 2026-11-23
+
+**未通过，退回 QoderCN 返工。** 复验基线为 `qoder` 与 `origin/qoder` 上的 `0b809f6`。
+
+- 72 项后端测试通过。独立使用 MySQL 8.4.13 验证迁移 `9d3f2a7c1b45` 升降级、空库重建、`alembic check` 和种子重跑。`check` 仅有既有生成列警告。
+- 等待评分期间取消请求，销毁旧连接池并新建应用实例。租约有效时返回 `409 SCORING_IN_PROGRESS`，等待 31 秒后用同一键恢复同一轮，得到 `201`。再次请求重放同一份成绩，数据库只有 1 条成绩。预置不兼容规则时，预览和正式评分均返回 `422`，正式轮次为 `failed/RUBRIC_INCOMPATIBLE`，成绩数为 0。恢复有效规则后同键重试成功。
+- **P1 · 旧租约失效后仍能写入成绩或失败状态。** 用同步点将请求 A 暂停在结果落库前，推进应用时钟使租约到期，让请求 B 接管同一轮，再恢复 A。A 先写成功时返回 `201`，B 重放 A 的成绩。A 先写失败时返回 `503` 并将 B 正在处理的轮次改为 `failed`，B 手握有效评分却收到 `409 STATE_CONFLICT`，最终成绩数为 0。成功、失败写入均只检查轮次状态，未校验本次认领仍有效。[租约接管](../../../backend/app/services/roleplay.py#L410) · [失败写入](../../../backend/app/services/roleplay.py#L489) · [成绩写入](../../../backend/app/services/roleplay.py#L534)
+- 复验条件是在成绩和失败状态的落库事务内校验本次认领标识。在 MySQL 8.4 覆盖接管后旧请求分别返回成功和失败的时序，确认两者均无法改变轮次、成绩或补训状态。有效的新请求须能完成同一轮，最终只保留一条成绩并可同键重放。
+
+## QoderCN 二次返工记录 · 2026-11-23
+
+- 认领：2026-11-23，QoderCN，`qoder`。
+- 返工变更：
+  - `backend/app/services/roleplay.py`：`_RoundWork` 携带本次 `lease_started_at`；新增认领比较与冲突错误。
+  - `_persist_attempt` 在状态校验后、写成绩前校验认领；`_mark_round_failed` 在写失败前校验认领。租约被接管时旧请求返回 `409 SCORING_IN_PROGRESS`，不修改轮次或成绩。
+  - `backend/tests/test_roleplay.py`：覆盖接管后旧请求分别“评分成功”和“评分失败”两条路径，并验证新请求仍可完成同一轮。
+  - `backend/README.md`：补充评分租约写入约束。
+- 验证命令与结果：
+  - `cd backend && uv run pytest -q`：**75 passed**。
+  - `uv run python -m compileall -q app tests alembic`：通过；改动文件 E/F lint 通过。
+  - Docker `mysql:8.4.13`：暂停旧请求在成绩落库前，更新认领模拟新请求接管；旧请求成功/失败两条路径均返回 `409 SCORING_IN_PROGRESS`，轮次保持 `scoring` 且该轮成绩数为 0。
+  - 将租约恢复为过期后，用同一 `client_round_id` 重试均得到 `201`、99 分，每轮只有一条成绩；两轮共 2 条成绩。
+  - 本次没有新增迁移或 DDL；临时 MySQL 8.4 容器已停止并自动移除。
+- 未验证：前端 T006/T007；真实模型提供方。M1 仍使用确定性替身。
