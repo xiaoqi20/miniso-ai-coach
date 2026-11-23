@@ -28,7 +28,6 @@ from app.seed_data import (
     RUBRIC_RULES,
     RUBRIC_VERSION_ID,
 )
-from app.services import courses as courses_service
 from tests.conftest import login
 from tests.helpers import (
     course_payload,
@@ -321,9 +320,7 @@ async def test_publish_idempotency_and_validation(client, app):
     assert count == 1
 
 
-async def test_same_key_retry_after_supersede_replays_original(
-    client, app, monkeypatch
-):
+async def test_same_key_retry_after_supersede_replays_original(client, app):
     await login(client, "usr_linmin")
     assert (await review_version(client)).status_code == 200
     first = await publish_version(client, key="retry-race")
@@ -344,23 +341,10 @@ async def test_same_key_retry_after_supersede_replays_original(
         v1 = await session.get(CourseVersion, COURSE_VERSION_ID)
     assert v1.status is CourseVersionStatus.superseded
 
-    original = courses_service.replay_or_clear
-    calls = 0
-
-    async def first_lookup_misses(*args, **kwargs):
-        # 模拟 REPEATABLE READ 首次快照看不到并行事务刚提交的幂等记录。
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return None
-        return await original(*args, **kwargs)
-
-    monkeypatch.setattr(courses_service, "replay_or_clear", first_lookup_misses)
     retried = await publish_version(client, COURSE_VERSION_ID, key="retry-race")
     assert retried.status_code == 201, retried.text
     assert retried.headers["Idempotent-Replay"] == "true"
     assert retried.json()["release"]["id"] == first_release_id
-    assert calls >= 2
 
     async with app.state.db.sessionmaker() as session:
         release_count = await session.scalar(

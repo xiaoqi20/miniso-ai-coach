@@ -494,41 +494,27 @@ async def publish_version(
     request_hash = hash_payload(body.model_dump(mode="json"))
     user_id = current_user.id
 
+    # 版本归属不可变。先在独立事务定位课程，避免普通读提前建立发布事务的快照。
+    async with session.begin():
+        course_id = await session.scalar(
+            select(CourseVersion.course_id).where(CourseVersion.id == version_id)
+        )
+    if course_id is None:
+        raise ApiError(404, "NOT_FOUND", "课程版本不存在")
+
     try:
         async with session.begin():
-            replay = await replay_or_clear(
-                session,
-                user_id=user_id,
-                route=route,
-                key_hash=key_hash,
-                request_hash=request_hash,
-            )
-            if replay is not None:
-                return replay
-
-            # 发布还要更新同课程的其他版本。先锁定课程行，让同课程发布和
-            # 克隆按同一顺序串行化；否则两个发布各锁目标版本后再互锁，
-            # InnoDB 会以 1213 死锁回滚其中一个请求。
-            course_id = await session.scalar(
-                select(CourseVersion.course_id).where(
-                    CourseVersion.id == version_id
-                )
-            )
-            if course_id is None:
-                raise ApiError(404, "NOT_FOUND", "课程版本不存在")
+            # 发布和克隆按课程串行化。拿到课程锁后的首次普通读能看到前一笔
+            # 发布写入的幂等记录，也避免锁定读在查不到记录时锁住索引间隙。
             await session.scalar(
                 select(Course.id).where(Course.id == course_id).with_for_update()
             )
-            # 首次快照读取可能发生在同键事务提交前，等待课程锁期间原事务
-            # 可能已完成并被新版本替代。此时必须用锁定读复查幂等记录，
-            # 否则会把成功的原发布误判为 superseded / STATE_CONFLICT。
             replay = await replay_or_clear(
                 session,
                 user_id=user_id,
                 route=route,
                 key_hash=key_hash,
                 request_hash=request_hash,
-                lock=True,
             )
             if replay is not None:
                 return replay
