@@ -118,6 +118,10 @@ class RoleplayRound(Base):
     )
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     submitted_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)
+    # 评分租约的持续时间；进程在评分中退出后，过期即可由同一键重新认领。
+    scoring_started_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True
+    )
     scored_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     session: Mapped[RoleplaySession] = relationship(back_populates="rounds")

@@ -17,6 +17,14 @@ REVIEW_CHECKLIST = {
 }
 
 
+def incompatible_rubric() -> dict:
+    """把 M1 的 affinity 维度改名为 service，两处键仍保持一致。"""
+    rules = deepcopy(RUBRIC_RULES)
+    rules["dimensions"]["service"] = rules["dimensions"].pop("affinity")
+    rules["weights"]["service"] = rules["weights"].pop("affinity")
+    return rules
+
+
 def course_payload(
     *,
     sku: str = "MINISO-TEST-01",

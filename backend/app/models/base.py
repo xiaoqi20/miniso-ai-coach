@@ -45,7 +45,7 @@ class UTCDateTime(TypeDecorator[datetime]):
     """UTC 时间类型。
 
     MySQL 使用 DATETIME(3) 保留毫秒，SQLite 测试库退回普通 DATETIME。
-    写入时统一转为 UTC 后去掉 tzinfo，读取时再补回 UTC 时区。
+    写入时统一转为 UTC 并截断到毫秒，读取时再补回 UTC 时区。
     """
 
     impl = DateTime
@@ -61,7 +61,12 @@ class UTCDateTime(TypeDecorator[datetime]):
             return None
         if value.tzinfo is None:
             value = value.replace(tzinfo=UTC)
-        return value.astimezone(UTC).replace(tzinfo=None)
+        utc_value = value.astimezone(UTC).replace(tzinfo=None)
+        # API 输出和 MySQL DATETIME(3) 都只保留毫秒。这里先截断，避免
+        # MySQL 把第 4 位小数四舍五入后与首次响应的时间不一致。
+        return utc_value.replace(
+            microsecond=utc_value.microsecond // 1000 * 1000
+        )
 
     def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
         if value is None:

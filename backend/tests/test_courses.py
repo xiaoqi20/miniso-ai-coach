@@ -15,15 +15,23 @@ from app.models import (
     ReleaseTarget,
     Retrain,
     RetrainStatus,
+    RubricVersion,
     Store,
     StoreMembership,
     User,
     UserRole,
 )
-from app.seed_data import COURSE_CONTENT, COURSE_ID, COURSE_VERSION_ID, RUBRIC_RULES
+from app.seed_data import (
+    COURSE_CONTENT,
+    COURSE_ID,
+    COURSE_VERSION_ID,
+    RUBRIC_RULES,
+    RUBRIC_VERSION_ID,
+)
 from tests.conftest import login
 from tests.helpers import (
     course_payload,
+    incompatible_rubric,
     publish_seed_course,
     publish_version,
     review_version,
@@ -564,6 +572,54 @@ async def test_release_detail_counts_from_later_stages(client, app):
     assert release_detail["qualified_in_window"] == 1
     assert release_detail["pending_review"] == 1
     assert release_detail["open_retrains"] == 1
+
+
+async def test_create_rejects_non_m1_dimensions(client):
+    await login(client, "usr_linmin")
+    payload = course_payload(sku="MINISO-SERVICE-DIM", name="不兼容维度")
+    payload["rubric"] = incompatible_rubric()
+
+    created = await client.post("/api/v1/hq/courses", json=payload)
+    assert created.status_code == 422
+    error = created.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert any("M1 四维" in field["msg"] for field in error["details"]["fields"])
+
+
+async def test_review_and_publish_reject_incompatible_stored_rubric(client, app):
+    await login(client, "usr_linmin")
+
+    async with app.state.db.sessionmaker() as session:
+        rubric = await session.get(RubricVersion, RUBRIC_VERSION_ID)
+        rubric.rules = incompatible_rubric()
+        await session.commit()
+
+    rejected_review = await review_version(client)
+    assert rejected_review.status_code == 422
+    assert rejected_review.json()["error"]["code"] == "VALIDATION_ERROR"
+    async with app.state.db.sessionmaker() as session:
+        version = await session.get(CourseVersion, COURSE_VERSION_ID)
+    assert version.status is CourseVersionStatus.draft
+
+    async with app.state.db.sessionmaker() as session:
+        rubric = await session.get(RubricVersion, RUBRIC_VERSION_ID)
+        rubric.rules = deepcopy(RUBRIC_RULES)
+        await session.commit()
+    assert (await review_version(client)).status_code == 200
+
+    async with app.state.db.sessionmaker() as session:
+        rubric = await session.get(RubricVersion, RUBRIC_VERSION_ID)
+        rubric.rules = incompatible_rubric()
+        await session.commit()
+
+    rejected_publish = await publish_version(client, key="invalid-rubric")
+    assert rejected_publish.status_code == 422
+    assert rejected_publish.json()["error"]["code"] == "VALIDATION_ERROR"
+    async with app.state.db.sessionmaker() as session:
+        release_count = await session.scalar(
+            select(func.count()).select_from(Release)
+        )
+    assert release_count == 0
 
 
 async def test_course_list_cursor(client):

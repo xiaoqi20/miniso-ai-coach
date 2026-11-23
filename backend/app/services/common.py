@@ -12,9 +12,12 @@ import json
 from datetime import datetime
 from typing import Any, Sequence, TypeVar
 
+from pydantic import ValidationError
+
 from app.errors import ApiError
 from app.models import Retrain, RetrainStatus
 from app.models.identity import User
+from app.schemas.course import RubricRules
 from app.security import iso_utc
 
 T = TypeVar("T")
@@ -32,6 +35,31 @@ def iso_or_none(value: datetime | None) -> str | None:
 
 def user_brief(user: User) -> dict[str, str]:
     return {"id": user.id, "name": user.name}
+
+
+def ensure_rubric_compatible(rules: dict[str, Any]) -> None:
+    """拒绝会流入员工任务的已存不兼容规则。
+
+    新建和改稿在 Pydantic 边界校验；这里补在审校、发布和评分前，
+    防止历史数据或直接改库绕过维度约束后触发 500。
+    """
+    try:
+        RubricRules.model_validate(rules)
+    except ValidationError as exc:
+        fields = [
+            {
+                "loc": ["rubric", *error.get("loc", ())],
+                "msg": error.get("msg", "Invalid value"),
+                "type": error.get("type", "value_error"),
+            }
+            for error in exc.errors()
+        ]
+        raise ApiError(
+            422,
+            "VALIDATION_ERROR",
+            "评分规则不符合 M1 契约",
+            {"fields": fields},
+        ) from exc
 
 
 def chapter_keys(content: dict[str, Any]) -> list[str]:

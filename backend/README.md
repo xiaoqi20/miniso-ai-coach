@@ -182,7 +182,10 @@ curl -i -b /tmp/staff.cookie \
 
 - 列表接口支持 `limit`（默认 50，最大 100）和 `cursor`；`next_cursor` 为空表示结束。
 - 审校后版本冻结；需要改稿时用 `POST /hq/courses/{course_id}/versions` 从不可变版本克隆下一版，再走审校和发布。新版本首次发布时旧 `published` 版本变为 `superseded`，旧批次仍可读取。
+- 发布和克隆都先锁 `courses` 行，再处理目标版本；同课程并发发布按课程串行，避免两个发布各锁一个版本后互锁。
 - 发布事务内一次性写入批次、目标门店、应训名单快照和审计；之后成员新增、离职或调店不会改写旧名单。
+- 评分规则必须且只能包含 M1 四维 `selling`、`objection`、`cross_sell`、`affinity`。创建时由请求校验拒绝，审校和发布前再次校验已存规则，防止历史数据绕过。
+- 章节完成时间在写入前截断到毫秒；首次响应、详情读取和重复上报返回同一 `completed_at`。
 - `GET /hq/releases/{release_id}/stats` 和店长统计属于 T005 的 48 小时统计范围，不在 T003 实现。
 
 ## T004 对练与评分接口
@@ -214,8 +217,10 @@ curl -b /tmp/staff.cookie \
 
 - 契约四个样本由模型替身和业务层共同覆盖：正确 `99`、同义表达 `91`、漏讲 `99` 但必考事实一票否决、事实错误 `69` 且命中红线。
 - `question_variant` 为 `default` / `alt`；M1 的 `answer_source` 只写 `text`。
-- 同一 `client_round_id` 已评分时返回同一轮次和成绩，`replayed=true`；正在评分返回 `409 SCORING_IN_PROGRESS`。
+- 同一 `client_round_id` 已评分时返回同一轮次和成绩，`replayed=true`；正在评分返回 `409 SCORING_IN_PROGRESS`，`details.retry_after_seconds` 给出建议等待秒数。
+- 轮次进入 `scoring` 时持久化 `scoring_started_at`，租约为 30 秒。进程在评分中退出后，租约内仍返回 409；过期后同一键可重新认领该轮，最终只写一条正式成绩。
 - 模型超时/失败返回 `503 SCORING_UNAVAILABLE`，输出无法核验返回 `502 SCORING_INVALID_OUTPUT`；轮次保留为 `failed`，同一键重试可重新评分。
+- 评分前再次校验批次绑定的规则。已存规则不兼容 M1 四维时，预览和正式评分返回 `422 VALIDATION_ERROR`；正式轮次落为 `failed` 且 `failure_code=RUBRIC_INCOMPATIBLE`，不写成绩。
 - 评分完成后在同一短事务写入成绩并更新任务分数、`qualified_at`、`state_version`；存在进行中补训时推进为 `submitted_unfixed` 或 `fixed_pending_review`，待复查后冻结证据。
 
 ## 迁移约定
@@ -229,6 +234,7 @@ uv run alembic check
 ```
 
 - 迁移文件必须审阅：Alembic 对重命名、CHECK 约束和 server_default 有盲区。当前初始迁移使用 MySQL 原生 ENUM 表达角色和状态，`retrains.open_flag` 是生成列，不能手工写入。
+- `9d3f2a7c1b45_add_roleplay_scoring_lease` 为 `roleplay_rounds` 增加可空的 `scoring_started_at`；历史行保持 `NULL`，恢复逻辑回退到 `submitted_at` 计算租约。该列不对外暴露。
 - 回滚验证：
 
 ```bash
@@ -263,8 +269,10 @@ uv run pytest
 - LangGraph 评分样本（正确、同义表达、漏讲、事实错误）、价格否定和非法模型候选
 - 对练章节门槛、预览不落库、轮次幂等/恢复、失败/超时/无效输出重试
 - 并发轮次编号、同 `client_round_id` 冲突、复练推进到待复查并冻结证据
+- M1 四维规则校验、审校/发布拒绝已存不兼容规则、对练预览/正式评分的定义错误
+- 固定亚毫秒时间下章节首次完成/重放/详情时间一致，以及评分租约过期后的同键恢复
 
-当前 `uv run pytest` 共 **67 passed**。
+当前 `uv run pytest` 共 **72 passed**。
 
 MySQL 迁移和真实连接由以下命令验证（不使用 SQLite 代替）：
 
@@ -275,7 +283,7 @@ uv run python -m app.seed
 uv run python -m app.seed
 ```
 
-T003 另在临时 MySQL 8.0 库验证了审校发布、名单快照、员工续学，以及并发克隆产生唯一版本号、并发相同幂等键只产生一个发布批次；T004 验证了并发不同 `client_round_id` 分配轮次 1/2，同一 `client_round_id` 并发返回 `409 SCORING_IN_PROGRESS`/`201` 且只写一份成绩。两卡均没有新增 DDL。
+T003/T004 在临时 MySQL 8.4.13 容器复验了审校发布、名单快照、员工续学、并发克隆唯一版本号和同键发布重放。返工后又验证了：同课程两个已审校版本并发发布均返回 `201`、无死锁；固定 `.123900` 亚毫秒时间下章节首次/重放/详情均为 `.123Z`；评分中断并切换新应用实例后，租约内返回 `409`、过期后同键恢复且只有一条成绩；已存不兼容规则在审校、发布、预览和正式评分均返回定义错误，正式轮次进入 `failed` 且无成绩。新增迁移 `9d3f2a7c1b45`。
 
 ## 路由扩展约定（交给 T005）
 
@@ -306,6 +314,7 @@ T003 另在临时 MySQL 8.0 库验证了审校发布、名单快照、员工续�
 - T004 已写入 `roleplay_attempts`，并同步维护 `assignments.last_score`、`best_score`、`last_attempt_at`、`first_passed_at`、`qualified_at`、`status` 和 `state_version`。
 - 存在进行中补训时，正式复练会把 `retrains.status` 推进为 `submitted_unfixed` 或 `fixed_pending_review`，写入 `evidence_round_no`/`evidence_attempt_id`，并递增 `version`；进入待复查后证据冻结。
 - T005 指派补训时使用当前 `roleplay_sessions.last_round_no` 作为 `baseline_round_no`；确认/驳回使用 `expected_version` 和冻结的 `evidence_attempt_id`，不要重新选择最新成绩。
+- 评分中断的轮次可能短暂停在 `scoring`；租约到期后由同一 `client_round_id` 恢复。正式成绩只存在于 `roleplay_attempts`，T005 统计和复查不要依赖轮次状态代替成绩。
 - 员工任务详情已返回最近 10 条成绩和 `open_retrain`；T005 写复查后继续沿用同一状态派生。
 
 ## 与 M1 §4.2 的有意字段差异（T003–T005 交接）
@@ -331,7 +340,7 @@ Can't create UNDO tablespace innodb_undo_001 since './undo_001' already exists.
 Data Dictionary initialization failed.
 ```
 
-已确认与空目录、`--no-defaults`、外部 `innodb_undo_directory` 无关，属于本机 MySQL 安装/数据字典问题，不是迁移脚本问题。T002 迁移、T003 课程接口与 T004 对练接口的真实验证使用本机已有的 `mysql:8.0.46` Docker 镜像；T003/T004 都没有新增 DDL，迁移和模型继续按 MySQL 8.4 LTS 兼容方式编写。T004 的评分依赖 `langgraph`，由 `uv sync` 安装；M1 不配置真实模型密钥。换到可用的 8.4 实例后，只需改 `.env` 中的两个 URL，重跑：
+已确认与空目录、`--no-defaults`、外部 `innodb_undo_directory` 无关，属于本机 MySQL 安装/数据字典问题，不是迁移脚本问题。真实验证改用 Docker `mysql:8.4`（本轮为 8.4.13）临时实例，迁移、`alembic check`、种子和 API 复验均通过；T004 返工新增的 `scoring_started_at` 已在该版本验证。T004 的评分依赖 `langgraph`，由 `uv sync` 安装；M1 不配置真实模型密钥。使用其他 8.4 实例时，只需改 `.env` 中的两个 URL，重跑：
 
 ```bash
 uv run alembic upgrade head

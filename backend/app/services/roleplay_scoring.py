@@ -15,7 +15,9 @@ from typing import Any, Literal, Protocol, TypedDict
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-DIMENSION_ORDER = ("selling", "objection", "cross_sell", "affinity")
+from app.schemas.course import M1_DIMENSION_KEYS
+
+DIMENSION_ORDER = M1_DIMENSION_KEYS
 NEGATION_TERMS = ("不是", "并非", "不只", "不止", "别报", "错报成", "不是卖")
 PRICE_SUFFIX = r"(?:\s*(?:元|块|块钱|元左右))?"
 

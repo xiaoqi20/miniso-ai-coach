@@ -11,6 +11,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# M1 §8.3 的计分公式固定使用这四个维度，规则版本不得改名或省略。
+M1_DIMENSION_KEYS = ("selling", "objection", "cross_sell", "affinity")
+
 
 class ChapterContent(BaseModel):
     model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
@@ -103,8 +106,18 @@ class RubricRules(BaseModel):
         fact_keys = [fact.key for fact in self.required_facts]
         if len(set(fact_keys)) != len(fact_keys):
             raise ValueError("必考事实 key 必须唯一")
-        if set(self.weights) != set(self.dimensions):
-            raise ValueError("weights 与 dimensions 的维度必须一一对应")
+
+        expected = set(M1_DIMENSION_KEYS)
+        missing = sorted(expected - set(self.dimensions))
+        unknown = sorted(set(self.dimensions) - expected)
+        if missing or unknown:
+            raise ValueError(
+                "评分维度必须为 M1 四维 "
+                f"{'、'.join(M1_DIMENSION_KEYS)}；"
+                f"缺少 {missing or '无'}，未知 {unknown or '无'}"
+            )
+        if set(self.weights) != expected:
+            raise ValueError("weights 必须且只能覆盖 M1 四维")
         if any(weight < 0 or weight > 1 for weight in self.weights.values()):
             raise ValueError("权重必须在 0 到 1 之间")
         if abs(sum(self.weights.values()) - 1.0) > 0.001:

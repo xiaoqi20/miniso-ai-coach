@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -33,20 +34,23 @@ from app.schemas.roleplay import RoleplayPreviewRequest, RoleplayRoundRequest
 from app.security import iso_utc
 from app.services.common import (
     chapter_keys,
+    ensure_rubric_compatible,
     iso_or_none,
     open_retrain_for,
     open_retrain_payload,
 )
 from app.services.learning import derive_assignment_status
 from app.services.roleplay_scoring import (
+    DIMENSION_ORDER,
     ScoringInvalidOutputError,
     ScoringResult,
     ScoringUnavailableError,
     score_answer,
 )
 
-DIMENSION_ORDER = ("selling", "objection", "cross_sell", "affinity")
 SCORING_TIMEOUT_SECONDS = 10
+# 必须大于评分超时，确保正常执行的请求不会被另一个重试提前认领。
+SCORING_LEASE_SECONDS = 30
 
 
 async def _score_with_timeout(
@@ -217,6 +221,7 @@ async def preview_answer(
 ) -> dict[str, Any]:
     assignment = await _load_assignment(session, user, assignment_id)
     _release, _version, rubric = await _load_release_context(session, assignment)
+    ensure_rubric_compatible(rubric.rules)
     _question_text(rubric, body.question_variant)
 
     # 预览只读；模型调用前结束查询事务，避免等待期间占用连接。
@@ -380,23 +385,56 @@ async def _prepare_round(
                     replayed=True,
                 )
             if existing.status is RoundStatus.scoring:
-                raise ApiError(
-                    409,
-                    "SCORING_IN_PROGRESS",
-                    "该轮次正在评分，请稍后重试",
-                    {
-                        "round_no": existing.round_no,
-                        "client_round_id": existing.client_round_id,
-                        "status": existing.status.value,
-                    },
+                now = utcnow()
+                lease_started = existing.scoring_started_at or existing.submitted_at
+                lease_expires = lease_started + timedelta(
+                    seconds=SCORING_LEASE_SECONDS
+                )
+                if now < lease_expires:
+                    # 评分进程仍在租约内，继续返回冲突；进程退出后租约到期，
+                    # 同一 client_round_id 可以安全地重新认领这一轮。
+                    retry_after = max(
+                        1, int((lease_expires - now).total_seconds()) + 1
+                    )
+                    raise ApiError(
+                        409,
+                        "SCORING_IN_PROGRESS",
+                        "该轮次正在评分，请稍后重试",
+                        {
+                            "round_no": existing.round_no,
+                            "client_round_id": existing.client_round_id,
+                            "status": existing.status.value,
+                            "retry_after_seconds": retry_after,
+                        },
+                    )
+                existing.scoring_started_at = now
+                existing.failure_code = None
+                existing.scored_at = None
+                roleplay_session.updated_at = now
+                return _RoundWork(
+                    round_id=existing.id,
+                    round_no=existing.round_no,
+                    client_round_id=existing.client_round_id,
+                    question_variant=existing.question_variant.value,
+                    question_text=existing.question_text,
+                    answer_text=existing.answer_text,
+                    session_id=roleplay_session.id,
+                    assignment_id=assignment.id,
+                    release_id=assignment.release_id,
+                    rubric_version_id=rubric.id,
+                    required_chapters=required_chapters,
+                    rubric_rules=rubric.rules,
+                    replayed=False,
                 )
             if existing.status is not RoundStatus.failed:
                 raise ApiError(500, "INTERNAL_ERROR", "轮次状态异常")
 
+            now = utcnow()
             existing.status = RoundStatus.scoring
             existing.failure_code = None
+            existing.scoring_started_at = now
             existing.scored_at = None
-            roleplay_session.updated_at = utcnow()
+            roleplay_session.updated_at = now
             return _RoundWork(
                 round_id=existing.id,
                 round_no=existing.round_no,
@@ -427,6 +465,7 @@ async def _prepare_round(
             answer_source=AnswerSource.text,
             status=RoundStatus.scoring,
             submitted_at=now,
+            scoring_started_at=now,
         )
         roleplay_session.updated_at = now
         session.add(roleplay_round)
@@ -674,6 +713,28 @@ async def submit_round(
     work = await _prepare_round(session, user, session_id, body)
     if work.replayed:
         return await _round_response(session, work.round_id, replayed=True)
+
+    try:
+        ensure_rubric_compatible(work.rubric_rules)
+    except ApiError as exc:
+        # 轮次已经创建或认领；把不可评分的规则落到 failed，避免永久停在
+        # scoring，同时不写任何正式成绩。
+        await _mark_round_failed(
+            session,
+            work.round_id,
+            "RUBRIC_INCOMPATIBLE",
+        )
+        raise ApiError(
+            exc.status_code,
+            exc.code,
+            "评分规则不兼容，轮次已保存，请修复规则后重试",
+            {
+                **exc.details,
+                "round_no": work.round_no,
+                "client_round_id": work.client_round_id,
+                "status": "failed",
+            },
+        ) from exc
 
     try:
         result = await _score_with_timeout(

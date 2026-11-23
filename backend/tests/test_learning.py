@@ -1,8 +1,11 @@
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 
 from app.models import (
     AnswerSource,
     Assignment,
+    ChapterProgress,
     QuestionVariant,
     Retrain,
     RetrainStatus,
@@ -180,6 +183,46 @@ async def test_chapter_completion_is_idempotent_and_derives_status(client):
     )
     assert forbidden.status_code == 404
     assert forbidden.json()["error"]["code"] == "NOT_FOUND"
+
+
+async def test_chapter_completion_uses_persisted_millisecond_time(
+    client, app, monkeypatch
+):
+    fixed = datetime(2026, 11, 24, 9, 35, 0, 123900, tzinfo=UTC)
+    monkeypatch.setattr("app.services.learning.utcnow", lambda: fixed)
+    await publish_seed_course(client)
+    item = await _staff_assignment(client, "usr_linxiaomei")
+    assignment_id = item["assignment_id"]
+
+    first = await client.post(
+        f"/api/v1/staff/assignments/{assignment_id}/chapters/ch1/complete",
+        json={},
+    )
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["completed_at"] == "2026-11-24T09:35:00.123Z"
+
+    repeated = await client.post(
+        f"/api/v1/staff/assignments/{assignment_id}/chapters/ch1/complete",
+        json={},
+    )
+    assert repeated.json()["completed_at"] == body["completed_at"]
+    assert repeated.json()["already_completed"] is True
+    assert repeated.json()["state_version"] == body["state_version"]
+
+    detail = await client.get(f"/api/v1/staff/assignments/{assignment_id}")
+    assert detail.json()["progress"]["chapter_completed_at"]["ch1"] == body[
+        "completed_at"
+    ]
+
+    async with app.state.db.sessionmaker() as session:
+        progress = await session.scalar(
+            select(ChapterProgress).where(
+                ChapterProgress.assignment_id == assignment_id,
+                ChapterProgress.chapter_key == "ch1",
+            )
+        )
+    assert progress.completed_at.microsecond == 123000
 
 
 async def test_staff_scope_and_draft_isolation(client):

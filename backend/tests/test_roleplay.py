@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 from uuid import uuid4
 
 from httpx import ASGITransport, AsyncClient
@@ -14,6 +15,7 @@ from app.models import (
     RoleplayRound,
     RoleplaySession,
     RoundStatus,
+    RubricVersion,
 )
 from app.models.base import utcnow
 from app.seed_data import COURSE_VERSION_ID, RUBRIC_VERSION_ID
@@ -23,11 +25,21 @@ from app.services.roleplay_scoring import (
     ScoringUnavailableError,
 )
 from tests.conftest import login
-from tests.helpers import publish_seed_course
+from tests.helpers import incompatible_rubric, publish_seed_course
 
-CORRECT = "您摸摸我们拆好的样品，这款虽然 59 元但它是日本正版联名授权，定制超柔短毛绒手感非常软糯！如果想稳抽乌萨奇可以摇盒挑手感，或者和朋友拼端盒 6 个绝对不重复，结账还可以加 9.9 元换购防尘挂袋挂包不怕脏哦！"
-SYNONYM = "这款是日本正版授权的联名毛绒公仔，手感软糯，五十九块钱一个；端盒六个不重样，您要不要摸一下拆开的样品？加 9.9 元还能配防尘挂袋。"
-FACTUAL_ERROR = "这款是正版联名毛绒公仔，59 元，端盒 6 个可能会重复，您摸摸样品，加 9.9 元配防尘挂袋，买一送一哦。"
+CORRECT = (
+    "您摸摸我们拆好的样品，这款虽然 59 元但它是日本正版联名授权，"
+    "定制超柔短毛绒手感非常软糯！如果想稳抽乌萨奇可以摇盒挑手感，"
+    "或者和朋友拼端盒 6 个绝对不重复，结账还可以加 9.9 元换购防尘挂袋挂包不怕脏哦！"
+)
+SYNONYM = (
+    "这款是日本正版授权的联名毛绒公仔，手感软糯，五十九块钱一个；"
+    "端盒六个不重样，您要不要摸一下拆开的样品？加 9.9 元还能配防尘挂袋。"
+)
+FACTUAL_ERROR = (
+    "这款是正版联名毛绒公仔，59 元，端盒 6 个可能会重复，"
+    "您摸摸样品，加 9.9 元配防尘挂袋，买一送一哦。"
+)
 
 
 async def _assignment_id(client) -> str:
@@ -447,12 +459,133 @@ async def test_scoring_in_progress_conflict(client, app):
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "SCORING_IN_PROGRESS"
     assert response.json()["error"]["details"]["status"] == "scoring"
+    assert response.json()["error"]["details"]["retry_after_seconds"] >= 1
 
     async with app.state.db.sessionmaker() as session:
         attempt_count = await session.scalar(
             select(func.count()).select_from(RoleplayAttempt)
         )
     assert attempt_count == 0
+
+
+async def test_stale_scoring_round_is_reclaimed(client, app):
+    assignment_id = await _ready_assignment(client)
+    created = await _create_session(client, assignment_id)
+    session_id = created["session"]["id"]
+    client_round_id = str(uuid4())
+    stale_at = utcnow() - timedelta(
+        seconds=roleplay_service.SCORING_LEASE_SECONDS + 1
+    )
+
+    async with app.state.db.sessionmaker() as session:
+        roleplay_session = await session.scalar(
+            select(RoleplaySession).where(
+                RoleplaySession.assignment_id == assignment_id
+            )
+        )
+        roleplay_session.last_round_no = 1
+        session.add(
+            RoleplayRound(
+                id="rnd_stale_scoring",
+                session_id=roleplay_session.id,
+                round_no=1,
+                client_round_id=client_round_id,
+                question_variant=QuestionVariant.default,
+                question_text="问题",
+                answer_text=CORRECT,
+                answer_source=AnswerSource.text,
+                status=RoundStatus.scoring,
+                submitted_at=stale_at,
+                scoring_started_at=stale_at,
+            )
+        )
+        await session.commit()
+
+    payload = _round_payload(client_round_id, CORRECT)
+    recovered = await client.post(
+        f"/api/v1/staff/roleplay-sessions/{session_id}/rounds",
+        json=payload,
+    )
+    assert recovered.status_code == 201, recovered.text
+    body = recovered.json()
+    assert body["replayed"] is False
+    assert body["round"]["round_no"] == 1
+    assert body["round"]["status"] == "scored"
+    assert body["attempt"]["total"] == 99
+    attempt_id = body["attempt"]["attempt_id"]
+
+    async with app.state.db.sessionmaker() as session:
+        attempt_count = await session.scalar(
+            select(func.count()).select_from(RoleplayAttempt)
+        )
+        roleplay_round = await session.get(RoleplayRound, "rnd_stale_scoring")
+    assert attempt_count == 1
+    assert roleplay_round.status is RoundStatus.scored
+
+    replay = await client.post(
+        f"/api/v1/staff/roleplay-sessions/{session_id}/rounds",
+        json=payload,
+    )
+    assert replay.status_code == 201
+    assert replay.json()["replayed"] is True
+    assert replay.json()["attempt"]["attempt_id"] == attempt_id
+
+
+async def test_incompatible_rubric_returns_defined_errors(client, app):
+    assignment_id = await _ready_assignment(client)
+    created = await _create_session(client, assignment_id)
+    session_id = created["session"]["id"]
+
+    async with app.state.db.sessionmaker() as session:
+        rubric = await session.get(RubricVersion, RUBRIC_VERSION_ID)
+        rubric.rules = incompatible_rubric()
+        await session.commit()
+
+    preview = await client.post(
+        f"/api/v1/staff/assignments/{assignment_id}/roleplay-preview",
+        json={"answer_text": CORRECT, "question_variant": "default"},
+    )
+    assert preview.status_code == 422
+    assert preview.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert any(
+        "M1 四维" in field["msg"]
+        for field in preview.json()["error"]["details"]["fields"]
+    )
+
+    payload = _round_payload(str(uuid4()), CORRECT)
+    formal = await client.post(
+        f"/api/v1/staff/roleplay-sessions/{session_id}/rounds",
+        json=payload,
+    )
+    assert formal.status_code == 422
+    error = formal.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert error["details"]["status"] == "failed"
+
+    async with app.state.db.sessionmaker() as session:
+        roleplay_round = await session.scalar(
+            select(RoleplayRound).where(
+                RoleplayRound.client_round_id == payload["client_round_id"]
+            )
+        )
+        attempt_count = await session.scalar(
+            select(func.count()).select_from(RoleplayAttempt)
+        )
+    assert roleplay_round.status is RoundStatus.failed
+    assert roleplay_round.failure_code == "RUBRIC_INCOMPATIBLE"
+    assert attempt_count == 0
+
+    recovered = await client.get(
+        f"/api/v1/staff/roleplay-sessions/{session_id}"
+    )
+    round_body = next(
+        item
+        for item in recovered.json()["rounds"]
+        if item["client_round_id"] == payload["client_round_id"]
+    )
+    assert round_body["status"] == "failed"
+    assert round_body["failure_code"] == "RUBRIC_INCOMPATIBLE"
+    assert "attempt" not in round_body
 
 
 async def test_retrain_advances_to_review_and_freezes(client, app):

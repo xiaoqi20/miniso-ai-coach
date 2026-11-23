@@ -46,6 +46,7 @@ from app.security import iso_utc
 from app.services.common import (
     chapter_keys,
     encode_cursor,
+    ensure_rubric_compatible,
     iso_or_none,
     open_retrain_for,
     open_retrain_payload,
@@ -389,6 +390,15 @@ async def review_version(
                 {"current_status": version.status.value},
             )
 
+        rubric = await session.scalar(
+            select(RubricVersion).where(
+                RubricVersion.course_version_id == version.id
+            )
+        )
+        if rubric is None:
+            raise ApiError(500, "INTERNAL_ERROR", "课程版本缺少评分规则")
+        ensure_rubric_compatible(rubric.rules)
+
         checklist = body.checklist.model_dump()
         pending = [name for name, confirmed in checklist.items() if not confirmed]
         if pending:
@@ -496,6 +506,19 @@ async def publish_version(
             if replay is not None:
                 return replay
 
+            # 发布还要更新同课程的其他版本。先锁定课程行，让同课程发布和
+            # 克隆按同一顺序串行化；否则两个发布各锁目标版本后再互锁，
+            # InnoDB 会以 1213 死锁回滚其中一个请求。
+            course_id = await session.scalar(
+                select(CourseVersion.course_id).where(
+                    CourseVersion.id == version_id
+                )
+            )
+            if course_id is None:
+                raise ApiError(404, "NOT_FOUND", "课程版本不存在")
+            await session.scalar(
+                select(Course.id).where(Course.id == course_id).with_for_update()
+            )
             version = await session.scalar(
                 select(CourseVersion)
                 .where(CourseVersion.id == version_id)
@@ -528,6 +551,7 @@ async def publish_version(
             )
             if rubric is None:
                 raise ApiError(500, "INTERNAL_ERROR", "课程版本缺少评分规则")
+            ensure_rubric_compatible(rubric.rules)
 
             stores = (
                 await session.scalars(
