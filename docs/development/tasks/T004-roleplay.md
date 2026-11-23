@@ -21,6 +21,13 @@
 - 所有 `POST` / `PUT` / `PATCH` / `DELETE` 必须带 `Content-Type: application/json`。
 - M1 的 `answer_source` 只允许 `text`；数据库中预留的 `voice` 留到 M2，不得写入。字段校验按 [backend/README.md](../../../backend/README.md) 的「与 M1 §4.2 的有意字段差异」执行。
 
+## T003 数据交接
+
+- 发布批次与应训名单已由 T003 落库：`Release` 绑定课程/规则版本，`Assignment` 是发布时快照；正式对练按 `assignment_id` 和 `release.rubric_version_id` 读取绑定版本，不按当前门店成员关系重算。
+- 写正式成绩时在同一短事务更新 `assignments.status`、`last_score`、`best_score`、`qualified_at`、`state_version`；状态派生可复用 `app/services/learning.py` 的 `derive_assignment_status`。
+- 员工任务详情已返回最近 10 条 `roleplay_attempts` 和 `open_retrain` 读模型；T004 写入后保持这些字段与正式成绩一致。
+- `GET /hq/releases/{id}` 已提供 `assigned_total`、`qualified_in_window`、`pending_review`、`open_retrains` 汇总；T004 只需写业务事实，不另建统计表。
+
 ## 交付记录
 
 认领后在此登记交付、验证和 Codex 验收结论。 [记录模板](TEMPLATE.md)

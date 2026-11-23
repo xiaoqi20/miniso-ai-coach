@@ -20,6 +20,13 @@
 - 所有 `POST` / `PUT` / `PATCH` / `DELETE` 必须带 `Content-Type: application/json`，无正文写操作也不例外。
 - 字段长度和分数类型按 [backend/README.md](../../../backend/README.md) 的「与 M1 §4.2 的有意字段差异」执行。
 
+## T003 数据交接
+
+- 发布批次、目标门店、应训名单快照和员工章节进度已由 T003 落库；店长查询按 `Assignment.store_id` 和批次目标门店限定，不按当前成员关系重算。
+- `GET /hq/releases/{id}` 已返回 `assigned_total`、`qualified_in_window`、`pending_review`、`open_retrains` 读模型；T005 的 HQ/店长 48 小时统计按 M1 §6.8/§7 共用同一结构。
+- 补训/复查写入 `retrains` 后，在同一短事务刷新 `assignments.status` 和 `state_version`；员工列表和批次名单的 `open_retrain` 字段会直接读取该状态。
+- `qualified_at` 已由 T003 建表并由 T004 在首次正式通过时写入；T005 只能读取，不因复查确认或窗口外操作回写。
+
 ## 交付记录
 
 认领后在此登记交付、验证和 Codex 验收结论。 [记录模板](TEMPLATE.md)

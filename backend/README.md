@@ -1,6 +1,6 @@
 # MINISO 门店培训 · M1 后端底座
 
-本目录是 T002 交付的后端骨架：FastAPI 应用入口、配置、MySQL 连接、Alembic 初始迁移、开发种子和公共会话鉴权。业务路由由 T003–T005 在此基础上扩展。
+本目录包含 T002 的 FastAPI/MySQL/会话底座，以及 T003 的课程审校发布与员工学习接口。T004/T005 在此基础上实现对练评分和店长补训复查。
 
 ## 技术栈与范围
 
@@ -23,9 +23,17 @@ backend/
     security.py             # 会话令牌、Cookie、UTC 格式化
     models/                 # 17 张业务表（另含 alembic_version）
     schemas/                # API 请求/响应
+    schemas/course.py       # 课程、评分规则、审校与发布请求
+    schemas/learning.py     # 员工章节完成请求
     services/auth.py        # 会话解析、当前用户
+    services/courses.py     # 课程、版本、审校、发布与批次读模型
+    services/learning.py    # 员工任务、章节进度与状态派生
+    services/idempotency.py # 发布幂等键
+    services/common.py      # 游标、时间/用户/补训展示
     api/deps.py             # 公共鉴权与门店范围依赖
     api/routers/auth.py     # dev-login / logout / me
+    api/routers/hq_courses.py    # 总部课程、审校、发布、批次
+    api/routers/staff_learning.py # 员工任务、课程、章节完成
     seed.py                 # 幂等开发种子
     seed_data.py            # 门店、用户、课程和评分规则样例
   alembic/                  # 迁移环境与初始版本
@@ -124,6 +132,54 @@ curl -i -b /tmp/shouke.cookie \
 
 `/api/v1/me` 匿名返回 `401 AUTH_REQUIRED`；Cookie 过期或已登出返回 `401 SESSION_EXPIRED`；跨门店资源返回 `404 NOT_FOUND`。HTTPS 下即使 `COOKIE_SECURE=false`，登录和登出响应的 Cookie 也会带 `Secure`。
 
+## T003 课程发布与学习接口
+
+以下示例使用种子草稿课程 `crv_chiikawa_v1`，发布到北京路门店。发布前必须完成审校，发布请求必须带 `Idempotency-Key`；相同键和相同请求体重放首次结果，不同请求体返回 `409 IDEMPOTENCY_KEY_REUSED`。
+
+```bash
+# 总部登录
+curl -i -c /tmp/hq.cookie \
+  -X POST http://127.0.0.1:8000/api/v1/auth/dev-login \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"usr_linmin"}'
+
+# 审校
+curl -i -b /tmp/hq.cookie \
+  -X POST http://127.0.0.1:8000/api/v1/hq/course-versions/crv_chiikawa_v1/review \
+  -H 'Content-Type: application/json' \
+  -d '{"checklist":{"price_verified":true,"spec_verified":true,"redline_verified":true},"note":"已核对零售价、规格与话术红线"}'
+
+# 定向发布
+curl -i -b /tmp/hq.cookie \
+  -X POST http://127.0.0.1:8000/api/v1/hq/course-versions/crv_chiikawa_v1/publish \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-publish-1' \
+  -d '{"store_ids":["store_bj"],"deadline_hours":48,"expected_revision":1}'
+
+# 读取批次和应训名单
+curl -b /tmp/hq.cookie http://127.0.0.1:8000/api/v1/hq/releases/<release_id>
+curl -b /tmp/hq.cookie http://127.0.0.1:8000/api/v1/hq/releases/<release_id>/assignees
+
+# 员工登录和续学
+curl -i -c /tmp/staff.cookie \
+  -X POST http://127.0.0.1:8000/api/v1/auth/dev-login \
+  -H 'Content-Type: application/json' \
+  -d '{"user_id":"usr_linxiaomei"}'
+
+curl -b /tmp/staff.cookie http://127.0.0.1:8000/api/v1/staff/assignments
+curl -b /tmp/staff.cookie http://127.0.0.1:8000/api/v1/staff/assignments/<assignment_id>
+
+curl -i -b /tmp/staff.cookie \
+  -X POST http://127.0.0.1:8000/api/v1/staff/assignments/<assignment_id>/chapters/ch1/complete \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+- 列表接口支持 `limit`（默认 50，最大 100）和 `cursor`；`next_cursor` 为空表示结束。
+- 审校后版本冻结；需要改稿时用 `POST /hq/courses/{course_id}/versions` 从不可变版本克隆下一版，再走审校和发布。新版本首次发布时旧 `published` 版本变为 `superseded`，旧批次仍可读取。
+- 发布事务内一次性写入批次、目标门店、应训名单快照和审计；之后成员新增、离职或调店不会改写旧名单。
+- `GET /hq/releases/{release_id}/stats` 和店长统计属于 T005 的 48 小时统计范围，不在 T003 实现。
+
 ## 迁移约定
 
 - 修改模型后生成草稿并人工审阅：
@@ -161,6 +217,11 @@ uv run pytest
 - Origin 校验、生产环境不注册开发登录
 - 百分号编码的 Alembic 连接串可完成离线渲染，不报插值错误
 - 种子幂等、17 张业务表注册、审计动作按契约值存储
+- 课程创建、列表/详情、修订冲突、审校清单、不可变版本和克隆/替代
+- 发布幂等、缺少/复用幂等键、版本状态冲突、目标门店校验、多门店和空名单
+- 应训名单只含在职员工、角色/门店隔离、名单快照不随成员变更回写
+- 员工任务列表排序、课程详情、章节完成幂等、未知章节和越权 404
+- 发布批次合格人数/待复查/进行中补训读模型，以及员工最近 10 条成绩
 
 MySQL 迁移和真实连接由以下命令验证（不使用 SQLite 代替）：
 
@@ -171,7 +232,9 @@ uv run python -m app.seed
 uv run python -m app.seed
 ```
 
-## 路由扩展约定（交给 T003–T005）
+T003 另在临时 MySQL 8.0 库验证了审校发布、名单快照、员工续学，以及并发克隆产生唯一版本号、并发相同幂等键只产生一个发布批次；本卡没有新增 DDL。
+
+## 路由扩展约定（交给 T004–T005）
 
 1. 在 `app/api/routers/` 新建领域路由，例如 `courses.py`、`roleplay.py`。
 2. 依赖注入使用公共类型：
@@ -187,6 +250,13 @@ uv run python -m app.seed
 7. **媒体类型：** 所有 `POST` / `PUT` / `PATCH` / `DELETE` 必须带 `Content-Type: application/json`，无正文写操作也不例外；否则中间件返回 `422 VALIDATION_ERROR`。
 8. 新表或字段必须新增 Alembic 迁移，并在任务卡登记迁移顺序。
 9. 测试放在 `tests/`，优先使用 `create_app(test_settings)` + 共享内存 SQLite；MySQL 相关行为用上面的迁移命令单独验证。
+
+### T003 交接给 T004/T005
+
+- 发布批次与应训名单已经落库：`Release` 绑定课程/规则版本，`Assignment` 是发布时快照；员工读取必须按 `Assignment.user_id`，不要按当前门店成员关系动态计算。
+- T004 写正式成绩时，在短事务内同时更新 `assignments.status`、`last_score`、`best_score`、`qualified_at` 和 `state_version`；状态派生可复用 `app/services/learning.py` 的 `derive_assignment_status`。
+- T005 的补训/复查写入 `retrains` 后，同样要刷新 `assignments.status` 和 `state_version`；发布批次详情和员工列表已返回 `open_retrain` 读模型。
+- `GET /hq/releases/{id}` 的 `qualified_in_window`、`pending_review`、`open_retrains` 已按当前表数据计算；T005 的 48 小时统计接口（HQ 与店长共用结构）仍需按 M1 §6.8/§7 实现。
 
 ## 与 M1 §4.2 的有意字段差异（T003–T005 交接）
 
@@ -211,7 +281,7 @@ Can't create UNDO tablespace innodb_undo_001 since './undo_001' already exists.
 Data Dictionary initialization failed.
 ```
 
-已确认与空目录、`--no-defaults`、外部 `innodb_undo_directory` 无关，属于本机 MySQL 安装/数据字典问题，不是迁移脚本问题。本次 T002 的真实验证使用本机已有的 `mysql:8.0.46` Docker 镜像，迁移 SQL 和模型均按 MySQL 8.4 LTS 兼容方式编写。换到可用的 8.4 实例后，只需改 `.env` 中的两个 URL，重跑：
+已确认与空目录、`--no-defaults`、外部 `innodb_undo_directory` 无关，属于本机 MySQL 安装/数据字典问题，不是迁移脚本问题。T002 迁移与 T003 业务接口的真实验证使用本机已有的 `mysql:8.0.46` Docker 镜像；T003 没有新增 DDL，迁移和模型继续按 MySQL 8.4 LTS 兼容方式编写。换到可用的 8.4 实例后，只需改 `.env` 中的两个 URL，重跑：
 
 ```bash
 uv run alembic upgrade head
