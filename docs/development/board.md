@@ -5,7 +5,7 @@
 | 任务 | 负责范围 | 前置任务 | 状态 | 领取资格 | 承接 Agent | 分支 / 工作树 | 更新时间 | 交付 / 阻塞说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | [T001](tasks/T001-contract.md) | 身份、业务状态及接口契约 | — | 已完成 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | v1.0 契约已验收，已纳入 qoder 基线；原型重构与 AGENTS/skills 未包含 |
-| [T002](tasks/T002-backend-foundation.md) | 后端、数据库及会话底座 | T001 | 待验收 | 开放 | QoderCN | qoder | 2026-11-23 | 已提交 `backend/` 骨架、17 表迁移、会话鉴权与 20 项测试；MySQL 8.4 本机启动受限，详见任务卡 |
+| [T002](tasks/T002-backend-foundation.md) | 后端、数据库及会话底座 | T001 | 待验收 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | 四项返工已完成：门店范围过滤、鉴权事务边界、迁移 URL 转义、写请求与 Secure Cookie；32 项测试通过，详见任务卡 |
 | [T003](tasks/T003-course-delivery.md) | 审校发布与员工学习 API | T002 | 排队 | 开放 | — | — | — | — |
 | [T004](tasks/T004-roleplay.md) | 对练、评分及复练回写 | T002 | 排队 | 开放 | — | — | — | — |
 | [T005](tasks/T005-store-review.md) | 店长补训、复查及统计 API | T002 | 排队 | 开放 | — | — | — | — |

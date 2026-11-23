@@ -82,7 +82,7 @@ cp .env.example .env
 | `ALEMBIC_DATABASE_URL` | 同上转 `mysql+pymysql` | 迁移用同步连接；不填则自动推导 |
 | `SESSION_COOKIE_NAME` | `sk_session` | 会话 Cookie 名 |
 | `SESSION_TTL_HOURS` | `12` | 绝对过期时间 |
-| `COOKIE_SECURE` | `false` | 生产环境由配置强制为 `true` |
+| `COOKIE_SECURE` | `false` | 生产环境强制为 `true`；HTTPS 请求（含受信代理的 `X-Forwarded-Proto: https`）始终加 `Secure` |
 
 ### 4. 迁移与种子
 
@@ -115,10 +115,14 @@ curl -i -c /tmp/shouke.cookie \
 
 curl -b /tmp/shouke.cookie http://127.0.0.1:8000/api/v1/me
 
-curl -i -b /tmp/shouke.cookie -X POST http://127.0.0.1:8000/api/v1/auth/logout
+curl -i -b /tmp/shouke.cookie \
+  -X POST http://127.0.0.1:8000/api/v1/auth/logout \
+  -H 'Content-Type: application/json'
 ```
 
-`/api/v1/me` 匿名返回 `401 AUTH_REQUIRED`；Cookie 过期或已登出返回 `401 SESSION_EXPIRED`；跨门店资源返回 `404 NOT_FOUND`。
+所有 `POST` / `PUT` / `PATCH` / `DELETE` 请求即使没有正文，也必须带 `Content-Type: application/json`；否则返回 `422 VALIDATION_ERROR`，`details.fields[0].loc` 指向 `header.content-type`。登出也按这一规则处理。
+
+`/api/v1/me` 匿名返回 `401 AUTH_REQUIRED`；Cookie 过期或已登出返回 `401 SESSION_EXPIRED`；跨门店资源返回 `404 NOT_FOUND`。HTTPS 下即使 `COOKIE_SECURE=false`，登录和登出响应的 Cookie 也会带 `Secure`。
 
 ## 迁移约定
 
@@ -139,6 +143,7 @@ uv run alembic upgrade head
 ```
 
 - 迁移使用同步 PyMySQL；应用运行时使用 aiomysql。两者通过 `DATABASE_URL` / `ALEMBIC_DATABASE_URL` 指向同一个库。
+- 连接串中的百分号编码（例如密码含 `@`，URL 中写成 `%40`）由 `alembic/env.py` 在传给 ConfigParser 前转义；不要手工改成 `%%40`，在线和离线迁移都可直接使用标准 URL。
 
 ## 测试
 
@@ -150,7 +155,11 @@ uv run pytest
 
 - 开发登录、当前用户、登出撤销、过期/无效令牌
 - 请求体夹带角色字段、匿名访问、跨门店访问
+- 停用门店和角色不一致成员关系不再进入 `/me` 或门店路由
+- 鉴权依赖结束只读事务；路由入口可显式开启短写事务，模型等待期间不持有事务
+- 四种写方法均要求 JSON 媒体类型；HTTPS 开发登录和生产环境 Cookie 均带 `Secure`
 - Origin 校验、生产环境不注册开发登录
+- 百分号编码的 Alembic 连接串可完成离线渲染，不报插值错误
 - 种子幂等、17 张业务表注册、审计动作按契约值存储
 
 MySQL 迁移和真实连接由以下命令验证（不使用 SQLite 代替）：
@@ -170,11 +179,28 @@ uv run python -m app.seed
    - 当前用户：`CurrentUserDep`
    - 角色：`Annotated[CurrentUser, Depends(require_roles(UserRole.hq_ops))]`
    - 门店路径：`Annotated[CurrentUser, Depends(require_store_access)]`，路由必须同时声明 `{store_id}` 参数。
+   - `CurrentUser` 只保证 `user`、有效 `memberships` 和 `membership.store` 已加载；其他关系必须在业务查询中显式加载，避免异步懒加载。
 3. 业务错误统一抛 `ApiError(status_code, code, message, details)`；不要返回裸 `HTTPException`。
 4. 请求模型使用 `ConfigDict(extra="forbid")`，身份字段只从会话读取。
-5. 写操作保持短事务；模型调用（未来的 LangGraph/LLM）必须在事务外，评分核验后在短事务写入成绩。
-6. 新表或字段必须新增 Alembic 迁移，并在任务卡登记迁移顺序。
-7. 测试放在 `tests/`，优先使用 `create_app(test_settings)` + 共享内存 SQLite；MySQL 相关行为用上面的迁移命令单独验证。
+5. **事务边界：** `DbDep` 进入路由时没有活动事务；鉴权依赖和 `require_store_access` 已在返回前结束只读事务。写操作使用 `async with session.begin():` 包住短事务。模型调用（LangGraph/LLM）必须在事务外，等待模型期间不得持有数据库事务，核验后再开短事务写入成绩。
+6. **门店范围：** `CurrentUser.memberships` 已过滤停用门店，以及与 `users.role` 不一致的成员关系；门店路由统一用 `require_store_access`，越界返回 `404 NOT_FOUND`。手动调用 `ensure_store_access` 时不会自动提交，调用方需把它放在业务事务内，或在调用后自行结束只读事务。
+7. **媒体类型：** 所有 `POST` / `PUT` / `PATCH` / `DELETE` 必须带 `Content-Type: application/json`，无正文写操作也不例外；否则中间件返回 `422 VALIDATION_ERROR`。
+8. 新表或字段必须新增 Alembic 迁移，并在任务卡登记迁移顺序。
+9. 测试放在 `tests/`，优先使用 `create_app(test_settings)` + 共享内存 SQLite；MySQL 相关行为用上面的迁移命令单独验证。
+
+## 与 M1 §4.2 的有意字段差异（T003–T005 交接）
+
+实现以 `backend/alembic/versions/` 的迁移和 ORM 为准。以下差异是有意保留的，接口校验不要按契约示例的窄类型截断：
+
+| 字段组 | M1 §4.2 | 实现 | 交接要求 |
+| --- | --- | --- | --- |
+| 实体 ID | `varchar(32)` | `String(40)` | 运行时是有类型前缀的 ULID；请求/响应按不透明字符串处理，Pydantic 长度上限用 40。 |
+| `sessions.token_hash`、`idempotency_records.key_hash/request_hash` | `char(64)` | `String(64)`（MySQL `VARCHAR(64)`） | 只存 64 位十六进制哈希，不对外暴露；不要依赖 `CHAR` 的定长补空格行为。 |
+| `roleplay_rounds.client_round_id` | `char(36)` | `String(36)` | 长度仍为 36；按字符串校验 UUID。 |
+| `assignments.completed_chapter_count/last_score/best_score`、`roleplay_attempts.total`、`retrains.open_flag` | `tinyint` | `SMALLINT` | 分数接口仍按 0–100 校验，章节数按课程章节数校验；不要依赖数据库窄类型兜底。 |
+| `roleplay_rounds.answer_source` | M1 仅 `text` | 枚举同时包含 `voice` | M1 只允许写入 `text`；`voice` 留到 M2，T004 不得接受或写入。 |
+
+时间字段统一为 `DATETIME(3)` 存 UTC，JSON 字段、唯一键和索引与契约一致。T003–T005 的 Pydantic 模型应以本表和 ORM 为准，而不是按契约里的示例长度做截断。
 
 ## 本机环境说明
 

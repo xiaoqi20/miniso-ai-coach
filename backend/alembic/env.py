@@ -20,7 +20,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.sync_database_url)
+# Alembic 底层 ConfigParser 会把 % 当作插值符。连接串里合法的百分号编码
+# （例如密码中的 @ 写成 %40）必须先转义成 %%；ConfigParser 读取时会自动还原，
+# 这样在线和离线迁移都不会在初始化阶段报 invalid interpolation syntax。
+config.set_main_option("sqlalchemy.url", settings.sync_database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

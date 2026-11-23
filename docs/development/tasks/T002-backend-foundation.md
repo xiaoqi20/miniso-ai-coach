@@ -35,4 +35,46 @@
   - 本机 MySQL 8.4.8 在自定义 datadir 启动时报 `Can't create UNDO tablespace ... undo_001 already exists`，且 Docker Hub `mysql:8.4` 拉取被网络阻断；本次真实验证使用本机已有的 MySQL 8.0.46 镜像。迁移、ENUM、生成列和 JSON 均按 MySQL 8.4 LTS 兼容方式编写，待可用 8.4 实例后重跑 `upgrade head`、`alembic check` 和种子。
   - 企微身份映射、语音、SSE 和区域经理不在 M1/T002 范围。
   - 前端 T006 未改动；按规范由 Antigravity App 领取。
-- Codex 验收结论：待验收。请重点检查会话鉴权语义、17 张业务表的迁移基线、MySQL 8.4 环境复跑要求和 T003–T005 的路由扩展方式。
+
+## Codex 验收 · 2026-11-23
+
+验收基线为 `qoder` 的 `4decdbd`。**本轮未通过，退回 QoderCN 返工。** T003、T004、T005 依赖公共鉴权和事务边界，继续排队，待 T002 复验通过后解锁。
+
+### 独立复验结果
+
+- 锁定依赖环境复跑 `pytest`，20 项全部通过，覆盖匿名、过期和撤销会话、身份字段校验、角色、门店隔离及生产配置。
+- 使用官方 `mysql:8.4` 镜像启动一次性实例，`SELECT VERSION()` 返回 **8.4.13**。从空库执行 `upgrade head`、`alembic check`、`downgrade base`、再次 `upgrade head` 成功。核对了 17 张 InnoDB 业务表及 `alembic_version`。`alembic check` 对 `retrains.open_flag` 给出生成列表达式比对警告，另查表结构确认了 STORED 表达式及 `(assignment_id, open_flag)` 唯一索引。验收实例已关闭。
+- 连续两次执行种子，均得到 2 家门店、9 个用户、7 条成员关系、1 款草稿课程及其规则版本，发布批次和应训名单均为 0。种子的商品、章节和评分规则内容与 M1 §6.5.2 JSON 一致。
+- 实际启动 API 并接入 MySQL 8.4.13，核对三角色登录及 `/me`、服务端会话哈希、登出后会话失效、错误响应的请求 ID、Origin 拒绝和生产环境种子脚本拒绝执行。
+- 本机原生 MySQL 8.4.8 在独立空目录初始化时仍失败，本轮记录为 `SIGSEGV`。本机 Docker 官方镜像已补齐目标数据库版本的验收证据。
+
+### 返工与复验条件
+
+| 优先级 | 发现与影响 | 复验条件 |
+| --- | --- | --- |
+| P1 | 门店鉴权只过滤 `membership.active`。临时挂载店长测试路由后，停用北京路门店，已有店长会话仍可访问该店且 `/me` 仍列出。给该店长增加一条佛山店的有效 `staff` 成员关系后，复用 `require_roles` 与 `ensure_store_access` 的店长路由对佛山店返回 200。见 [auth.py](../../../backend/app/services/auth.py#L74) 和 [deps.py](../../../backend/app/api/deps.py#L70)。 | 过滤停用门店和角色不一致的成员关系，补用例验证 `/me` 的门店范围与店长路由一致，越界返回 `404 NOT_FOUND`。 |
+| P2 | 鉴权查询和业务路由复用同一 `DbDep`。将 `CurrentUserDep` 与 `DbDep` 同时注入测试写路由后，路由入口的 `session.in_transaction()` 为 `True`，显式 `session.begin()` 抛出 `A transaction is already begun on this Session`。T004 若在保留该事务时调用模型，会跨模型等待持有数据库事务。见 [deps.py](../../../backend/app/api/deps.py#L30)。 | 明确并实现公共依赖的事务边界。用临时路由模拟外部模型等待，验证鉴权后可开启独立短写事务，等待期间没有持有数据库事务。更新 T003–T005 的接入说明。 |
+| P2 | Alembic 将连接串直接交给配置插值。对带百分号编码的有效 URL 执行 `alembic upgrade head --sql`，报告 `invalid interpolation syntax`，在线迁移也经过同一初始化路径。见 [env.py](../../../backend/alembic/env.py#L22)。 | 使用含 URL 编码字符的临时凭据复验 Alembic，确认连接串能正确传递并完成迁移。 |
+| P2 | M1 §3.5 要求所有写请求使用 JSON，HTTPS 下会话 Cookie 必须有 `Secure`。用 `text/plain` 调用登出仍返回 204。以 `COOKIE_SECURE=false` 运行开发环境时，HTTPS 开发登录下发的 Cookie 缺少 `Secure`。见 [main.py](../../../backend/app/main.py#L57)、[auth.py](../../../backend/app/api/routers/auth.py#L53) 和 [security.py](../../../backend/app/security.py#L25)。 | 统一校验写请求的媒体类型，补齐登出和其他无正文写操作的测试及调用说明。补验 HTTPS 开发登录和生产环境 Cookie 行为。 |
+
+迁移复查时一并核对 M1 §4.2 的字段口径。目前实现使用较宽的部分 ID、哈希、分数字段类型，并已将未来的 `voice` 写入 `answer_source` 枚举。请在交接里记录有意采用的差异，让 T003–T005 的接口校验与数据库基线一致。
+
+## 返工记录 · 2026-11-23（QoderCN）
+
+已按上表完成四项返工，改动基于 `4decdbd`：
+
+| 项 | 修正 | 验证 |
+| --- | --- | --- |
+| P1 门店越权 | `active_memberships` 同时过滤停用成员关系、停用门店，以及与 `users.role` 不一致的成员关系；`/me` 和门店路由共用同一过滤结果。 | 新增「停用门店」和「店长挂 staff 成员关系」用例：`/me` 不再列出，店长组合路由返回 `404 NOT_FOUND`。 |
+| P2 事务边界 | `get_current_user` 和 `require_store_access` 在返回前提交并结束只读事务；`DbDep` 进入业务路由时 `in_transaction()` 为 `False`。 | 临时路由验证入口无事务、可显式开启短写事务，且在模拟外部模型等待期间不持有事务。 |
+| P2 迁移 URL | `alembic/env.py` 在交给 ConfigParser 前把连接串中的 `%` 转义为 `%%`。 | 离线 `alembic upgrade head --sql` 使用 `p%40ss` 连接串通过；临时 MySQL 8.0 库启用密码 `p@ss`、URL 使用 `p%40ss`，在线 `upgrade head`、`alembic check` 和 aiomysql 种子均成功。 |
+| P2 传输约定 | 中间件统一要求 `POST`/`PUT`/`PATCH`/`DELETE` 携带 `Content-Type: application/json`，无正文写操作同样校验；Cookie `Secure` 按实际 HTTPS 或 `X-Forwarded-Proto` 补齐，生产配置强制。 | 覆盖四种写方法、`text/plain` 登出、HTTPS 开发登录/登出 `Secure`，以及生产环境 HTTP 请求仍强制 `Secure`。 |
+
+验证结果：
+
+- `uv run pytest`：**32 passed**（原 20 项 + 新增 12 项）。
+- `uv run python -m compileall -q app tests`：通过。
+- 在线迁移临时库表数：17 张业务表 + `alembic_version`；`alembic check` 返回「No new upgrade operations detected」，仅保留 `retrains.open_flag` 生成列表达式警告。
+- 本机原生 MySQL 8.4.8 仍无法启动；Codex 已用 `mysql:8.4`（8.4.13）验证迁移基线，本次改动不涉及 DDL。
+- 字段口径差异已写入 [backend/README.md](../../../backend/README.md) 的「与 M1 §4.2 的有意字段差异」，T003–T005 按该表校验。
+- 提交状态：本次返工已提交到 `qoder` 分支，等待 Codex 按最新提交复验。

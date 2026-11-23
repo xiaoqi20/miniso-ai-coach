@@ -42,7 +42,7 @@ CAPABILITIES: dict[UserRole, list[str]] = {
 
 @dataclass(frozen=True)
 class CurrentUser:
-    """一次请求内的身份快照，包含已过滤的有效成员关系。"""
+    """一次请求内的身份快照，memberships 已过滤停用门店和角色不一致项。"""
 
     user: User
     memberships: tuple[StoreMembership, ...]
@@ -52,7 +52,7 @@ class CurrentUser:
         return self.user.role in roles
 
     def can_access_store(self, store_id: str) -> bool:
-        # 总部可跨门店读取；员工和店长只认有效成员关系。
+        # 总部可跨门店读取；员工和店长只认已通过 active_memberships 过滤的范围。
         if self.user.role is UserRole.hq_ops:
             return True
         return any(membership.store_id == store_id for membership in self.memberships)
@@ -72,7 +72,19 @@ def user_ref(user: User, memberships: tuple[StoreMembership, ...]) -> UserRef:
 
 
 def active_memberships(user: User) -> tuple[StoreMembership, ...]:
-    return tuple(membership for membership in user.memberships if membership.active)
+    """返回当前可用的门店范围。
+
+    除了成员关系本身有效，还要求门店未停用，且成员角色与账号角色一致。
+    users.role 是账号的唯一全局角色，门店成员关系只是该角色在门店上的展开，
+    不能借一条角色不一致的成员关系扩大或改变权限。
+    """
+    return tuple(
+        membership
+        for membership in user.memberships
+        if membership.active
+        and membership.store.active
+        and membership.role.value == user.role.value
+    )
 
 
 async def get_user_with_memberships(session: AsyncSession, user_id: str) -> User | None:

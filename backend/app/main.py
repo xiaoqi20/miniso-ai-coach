@@ -25,6 +25,13 @@ from app.errors import (
 )
 
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+JSON_MEDIA_TYPE = "application/json"
+
+
+def _has_json_content_type(request: Request) -> bool:
+    """只取媒体类型部分，允许 application/json; charset=utf-8。"""
+    content_type = request.headers.get("content-type", "")
+    return content_type.split(";", 1)[0].strip().lower() == JSON_MEDIA_TYPE
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -59,14 +66,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 请求 ID 会写入错误响应和 X-Request-Id，便于联调时定位日志。
         request.state.request_id = f"req_{ULID()}"
         origin = request.headers.get("origin")
-        if request.method in UNSAFE_METHODS and origin and origin not in settings.allowed_origins:
-            # 浏览器跨站 POST 在这里被拒绝；无 Origin 的 curl/测试客户端仍可用。
-            return error_response(
-                request,
-                403,
-                "CSRF_ORIGIN_REJECTED",
-                "请求来源不受信任",
-            )
+        if request.method in UNSAFE_METHODS:
+            if origin and origin not in settings.allowed_origins:
+                # 浏览器跨站 POST 在这里被拒绝；无 Origin 的 curl/测试客户端仍可用。
+                return error_response(
+                    request,
+                    403,
+                    "CSRF_ORIGIN_REJECTED",
+                    "请求来源不受信任",
+                )
+            if not _has_json_content_type(request):
+                # 契约要求所有写请求使用 application/json，无正文的登出等
+                # 写操作也必须显式携带该头；契约未单列媒体类型错误码，
+                # 统一归入 VALIDATION_ERROR，并定位到 header.content-type。
+                return error_response(
+                    request,
+                    422,
+                    "VALIDATION_ERROR",
+                    "写请求必须使用 application/json",
+                    {
+                        "fields": [
+                            {
+                                "loc": ["header", "content-type"],
+                                "msg": "写请求必须使用 application/json",
+                                "type": "value_error",
+                            }
+                        ]
+                    },
+                )
         response = await call_next(request)
         response.headers["X-Request-Id"] = request.state.request_id
         return response

@@ -13,6 +13,13 @@
 - [ ] 跨店读写、在考点未改正时提前确认，以及基于过期状态复查都按契约处理。
 - [ ] 提供批次的 48 小时通关统计，验证两家门店的发布范围、历史应训名单、时间边界、重复通关及空名单口径。
 
+## T002 公共依赖接入说明（2026-11-23 返工后）
+
+- 店长路由同时使用 `require_roles(UserRole.store_manager)` 与 `require_store_access`；`CurrentUser.memberships` 已过滤停用门店和与 `users.role` 不一致的成员关系，越界返回 `404 NOT_FOUND`。
+- `DbDep` 进入路由时没有活动事务；补训、复查和审计写入使用 `async with session.begin():` 包住短事务，幂等记录与业务写入在同一事务内。
+- 所有 `POST` / `PUT` / `PATCH` / `DELETE` 必须带 `Content-Type: application/json`，无正文写操作也不例外。
+- 字段长度和分数类型按 [backend/README.md](../../../backend/README.md) 的「与 M1 §4.2 的有意字段差异」执行。
+
 ## 交付记录
 
 认领后在此登记交付、验证和 Codex 验收结论。 [记录模板](TEMPLATE.md)

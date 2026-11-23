@@ -14,6 +14,13 @@
 - [ ] 员工学习进度按契约保存，重复上报同一章节后进度保持一致。读取草稿、越权和非法进度请求返回契约规定的结果。
 - [ ] 使用试点开发数据验证审校、发布、读取及续学，记录接口示例，供前端和闭环验收使用。
 
+## T002 公共依赖接入说明（2026-11-23 返工后）
+
+- `DbDep` 进入路由时没有活动事务；写操作使用 `async with session.begin():` 包住短事务。
+- 门店路由统一使用 `require_store_access`。`CurrentUser.memberships` 已过滤停用门店和与 `users.role` 不一致的成员关系，越界返回 `404 NOT_FOUND`。
+- 所有 `POST` / `PUT` / `PATCH` / `DELETE` 必须带 `Content-Type: application/json`，无正文写操作也不例外。
+- 字段长度和分数类型按 [backend/README.md](../../../backend/README.md) 的「与 M1 §4.2 的有意字段差异」执行，不要按契约示例截断。
+
 ## 交付记录
 
 认领后在此登记交付、验证和 Codex 验收结论。 [记录模板](TEMPLATE.md)

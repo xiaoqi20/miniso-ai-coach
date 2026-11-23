@@ -1,14 +1,17 @@
 from datetime import timedelta
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 from sqlalchemy import select
+from starlette.requests import Request
+from starlette.responses import Response
 
 from app.config import Settings
 from app.main import create_app
 from app.models import User, UserSession
 from app.models.base import utcnow
-from app.security import hash_token
+from app.security import hash_token, set_session_cookie
 from tests.conftest import login
 
 
@@ -67,7 +70,10 @@ async def test_logout_revokes_the_session(client):
     token = client.cookies.get("sk_session")
     assert token
 
-    logout = await client.post("/api/v1/auth/logout")
+    logout = await client.post(
+        "/api/v1/auth/logout",
+        headers={"Content-Type": "application/json"},
+    )
     assert logout.status_code == 204
     assert client.cookies.get("sk_session") is None
 
@@ -79,6 +85,72 @@ async def test_logout_revokes_the_session(client):
     response = await client.get("/api/v1/me")
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "SESSION_EXPIRED"
+
+
+async def test_logout_requires_json_content_type(client):
+    await login(client, "usr_linxiaomei")
+
+    response = await client.post(
+        "/api/v1/auth/logout",
+        content=b"",
+        headers={"Content-Type": "text/plain"},
+    )
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert error["details"]["fields"][0]["loc"] == ["header", "content-type"]
+
+    # 被拒绝的登出不能撤销会话。
+    assert (await client.get("/api/v1/me")).status_code == 200
+
+
+async def test_https_dev_login_sets_secure_cookie(app):
+    # 开发环境默认 COOKIE_SECURE=false，但浏览器侧是 HTTPS 时仍必须加 Secure。
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://testserver",
+    ) as https_client:
+        response = await https_client.post(
+            "/api/v1/auth/dev-login",
+            json={"user_id": "usr_linxiaomei"},
+            # 直接 TLS 时不能被伪造的转发头降级。
+            headers={"X-Forwarded-Proto": "http"},
+        )
+        assert response.status_code == 200
+        assert "Secure" in response.headers["set-cookie"]
+
+        logout = await https_client.post(
+            "/api/v1/auth/logout",
+            headers={"Content-Type": "application/json"},
+        )
+        assert logout.status_code == 204
+        assert "Secure" in logout.headers["set-cookie"]
+
+
+def test_production_cookie_forces_secure():
+    # 生产配置即使请求在应用侧表现为 HTTP，也必须下发 Secure。
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        dev_auth_enabled=False,
+        app_origins="https://app.example.com",
+        database_url="sqlite+aiosqlite://",
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/auth/dev-login",
+            "scheme": "http",
+            "headers": [],
+            "query_string": b"",
+            "server": ("testserver", 80),
+            "client": ("testclient", 123),
+        }
+    )
+    response = Response()
+    set_session_cookie(response, settings, request, "token")
+    assert "Secure" in response.headers["set-cookie"]
 
 
 async def test_expired_session_is_rejected(app, client):
@@ -148,8 +220,6 @@ async def test_production_does_not_register_dev_login():
     )
     app = create_app(settings)
     try:
-        from httpx import ASGITransport, AsyncClient
-
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://testserver",

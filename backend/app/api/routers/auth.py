@@ -33,6 +33,7 @@ identity_router = APIRouter()
 @dev_router.post("/dev-login", response_model=LoginResponse)
 async def dev_login(
     body: DevLoginRequest,
+    request: Request,
     response: Response,
     session: DbDep,
     settings: SettingsDep,
@@ -44,7 +45,7 @@ async def dev_login(
     # 先提交会话再下发 Cookie，避免浏览器拿到一个数据库里不存在的令牌。
     token, user_session = await create_session(session, user, settings)
     await session.commit()
-    set_session_cookie(response, settings, token)
+    set_session_cookie(response, settings, request, token)
     return LoginResponse(
         user=user_ref(user, active_memberships(user)),
         session=SessionRef(expires_at=iso_utc(user_session.expires_at)),
@@ -59,7 +60,7 @@ async def logout(request: Request, session: DbDep, settings: SettingsDep) -> Res
         await revoke_session(session, token)
         await session.commit()
     response = Response(status_code=204)
-    clear_session_cookie(response, settings)
+    clear_session_cookie(response, settings, request)
     return response
 
 
