@@ -7,7 +7,7 @@
 | [T001](tasks/T001-contract.md) | 身份、业务状态及接口契约 | — | 已完成 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | v1.0 契约已验收，已纳入 qoder 基线；原型重构与 AGENTS/skills 未包含 |
 | [T002](tasks/T002-backend-foundation.md) | 后端、数据库及会话底座 | T001 | 已完成 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | `3bc9489` 已纳入 qoder 基线；Codex 独立复跑 32 项测试及 MySQL 8.4.13，四项返工通过 |
 | [T003](tasks/T003-course-delivery.md) | 审校发布与员工学习 API | T002 | 待验收 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | 审校发布、版本克隆、幂等发布与员工学习 API 已完成；50 项测试通过，MySQL 并发/幂等已验证，详见任务卡 |
-| [T004](tasks/T004-roleplay.md) | 对练、评分及复练回写 | T002 | 待领取 | 开放 | — | — | 2026-11-23 | T002 已验收 |
+| [T004](tasks/T004-roleplay.md) | 对练、评分及复练回写 | T002 | 待验收 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | LangGraph 评分、轮次幂等、复练推进与失败重试已完成；67 项测试通过，MySQL 并发已验证，详见任务卡 |
 | [T005](tasks/T005-store-review.md) | 店长补训、复查及统计 API | T002 | 待领取 | 开放 | — | — | 2026-11-23 | T002 已验收 |
 | [T006](tasks/T006-employee-h5.md) | Vue 公共入口与员工 H5 | T001 | 待领取 | Antigravity App 专属 | — | — | 2026-11-23 | T001 已验收；仅 Antigravity App 可领取 |
 | [T007](tasks/T007-operations-ui.md) | 总部 PC 与店长 H5 | T006 | 排队 | Antigravity App 专属 | — | — | — | — |

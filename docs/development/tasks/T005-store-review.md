@@ -27,6 +27,13 @@
 - 补训/复查写入 `retrains` 后，在同一短事务刷新 `assignments.status` 和 `state_version`；员工列表和批次名单的 `open_retrain` 字段会直接读取该状态。
 - `qualified_at` 已由 T003 建表并由 T004 在首次正式通过时写入；T005 只能读取，不因复查确认或窗口外操作回写。
 
+## T004 数据交接
+
+- T004 已写正式成绩并维护 `assignments.last_score/best_score/last_attempt_at/first_passed_at/qualified_at/status/state_version`；T005 不重复计算成绩，只读取冻结结果。
+- 存在进行中补训时，T004 已根据整轮成绩推进为 `submitted_unfixed` 或 `fixed_pending_review`，写入 `evidence_round_no`、`evidence_attempt_id` 并递增 `retrains.version`；进入待复查后证据冻结。
+- T005 指派补训时以当前 `roleplay_sessions.last_round_no` 作为 `baseline_round_no`；确认/驳回使用 `expected_version` 与冻结的 `evidence_attempt_id`，不要改用最新成绩。
+- 失败/无效模型输出只保留 `failed` 轮次，`roleplay_attempts` 为空，不应作为补训证据。
+
 ## 交付记录
 
 认领后在此登记交付、验证和 Codex 验收结论。 [记录模板](TEMPLATE.md)

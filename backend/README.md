@@ -1,6 +1,6 @@
 # MINISO 门店培训 · M1 后端底座
 
-本目录包含 T002 的 FastAPI/MySQL/会话底座，以及 T003 的课程审校发布与员工学习接口。T004/T005 在此基础上实现对练评分和店长补训复查。
+本目录包含 T002 的 FastAPI/MySQL/会话底座、T003 的课程审校发布与员工学习接口，以及 T004 的文字对练、评分与复练回写。T005 在此基础上实现店长补训复查与统计。
 
 ## 技术栈与范围
 
@@ -8,6 +8,7 @@
 - SQLAlchemy 2.x、`aiomysql` 运行时连接、`pymysql` 迁移连接
 - MySQL 8.4 LTS（本地验证环境如只有 8.0 也可运行本套 SQL）
 - Alembic 迁移；SQLite 仅用于单元测试的快速启动，不作为正式数据库
+- LangGraph `StateGraph` 编排评分流程；M1 使用确定性模型替身，不需要外部模型密钥
 
 M1 不包含企微登录、语音识别、SSE 流式回复和区域经理接口。开发登录只在 `APP_ENV=development` 时注册。
 
@@ -25,15 +26,19 @@ backend/
     schemas/                # API 请求/响应
     schemas/course.py       # 课程、评分规则、审校与发布请求
     schemas/learning.py     # 员工章节完成请求
+    schemas/roleplay.py     # 对练预览与正式轮次请求
     services/auth.py        # 会话解析、当前用户
     services/courses.py     # 课程、版本、审校、发布与批次读模型
     services/learning.py    # 员工任务、章节进度与状态派生
+    services/roleplay.py    # 对练会话、轮次、成绩和复练推进
+    services/roleplay_scoring.py # LangGraph 评分图、模型替身与业务计分
     services/idempotency.py # 发布幂等键
     services/common.py      # 游标、时间/用户/补训展示
     api/deps.py             # 公共鉴权与门店范围依赖
     api/routers/auth.py     # dev-login / logout / me
     api/routers/hq_courses.py    # 总部课程、审校、发布、批次
     api/routers/staff_learning.py # 员工任务、课程、章节完成
+    api/routers/staff_roleplay.py # 员工对练、预览、轮次
     seed.py                 # 幂等开发种子
     seed_data.py            # 门店、用户、课程和评分规则样例
   alembic/                  # 迁移环境与初始版本
@@ -180,6 +185,39 @@ curl -i -b /tmp/staff.cookie \
 - 发布事务内一次性写入批次、目标门店、应训名单快照和审计；之后成员新增、离职或调店不会改写旧名单。
 - `GET /hq/releases/{release_id}/stats` 和店长统计属于 T005 的 48 小时统计范围，不在 T003 实现。
 
+## T004 对练与评分接口
+
+员工完成全部章节后创建对练会话；`client_round_id` 是轮次幂等键。预览不要求学完章节，也不落库。评分使用 LangGraph `StateGraph` 调用确定性模型替身，业务层重新核验候选并计算四维分和总分；模型调用在数据库事务外。
+
+```bash
+# 员工登录后，使用 T003 的 assignment_id
+curl -i -b /tmp/staff.cookie \
+  -X POST http://127.0.0.1:8000/api/v1/staff/assignments/<assignment_id>/roleplay-sessions \
+  -H 'Content-Type: application/json'
+
+# 预览：不落库
+curl -i -b /tmp/staff.cookie \
+  -X POST http://127.0.0.1:8000/api/v1/staff/assignments/<assignment_id>/roleplay-preview \
+  -H 'Content-Type: application/json' \
+  -d '{"answer_text":"您摸摸我们拆好的样品，这款虽然 59 元但它是日本正版联名授权，定制超柔短毛绒手感非常软糯！如果想稳抽乌萨奇可以摇盒挑手感，或者和朋友拼端盒 6 个绝对不重复，结账还可以加 9.9 元换购防尘挂袋挂包不怕脏哦！","question_variant":"default"}'
+
+# 正式轮次
+curl -i -b /tmp/staff.cookie \
+  -X POST http://127.0.0.1:8000/api/v1/staff/roleplay-sessions/<session_id>/rounds \
+  -H 'Content-Type: application/json' \
+  -d '{"client_round_id":"0f8fad5b-d9cb-469f-a165-70867728950e","answer_text":"这款是日本正版授权的联名毛绒公仔，手感软糯，五十九块钱一个；端盒六个不重样，您要不要摸一下拆开的样品？加 9.9 元还能配防尘挂袋。","question_variant":"default"}'
+
+# 刷新或重启后恢复
+curl -b /tmp/staff.cookie \
+  http://127.0.0.1:8000/api/v1/staff/roleplay-sessions/<session_id>
+```
+
+- 契约四个样本由模型替身和业务层共同覆盖：正确 `99`、同义表达 `91`、漏讲 `99` 但必考事实一票否决、事实错误 `69` 且命中红线。
+- `question_variant` 为 `default` / `alt`；M1 的 `answer_source` 只写 `text`。
+- 同一 `client_round_id` 已评分时返回同一轮次和成绩，`replayed=true`；正在评分返回 `409 SCORING_IN_PROGRESS`。
+- 模型超时/失败返回 `503 SCORING_UNAVAILABLE`，输出无法核验返回 `502 SCORING_INVALID_OUTPUT`；轮次保留为 `failed`，同一键重试可重新评分。
+- 评分完成后在同一短事务写入成绩并更新任务分数、`qualified_at`、`state_version`；存在进行中补训时推进为 `submitted_unfixed` 或 `fixed_pending_review`，待复查后冻结证据。
+
 ## 迁移约定
 
 - 修改模型后生成草稿并人工审阅：
@@ -222,6 +260,11 @@ uv run pytest
 - 应训名单只含在职员工、角色/门店隔离、名单快照不随成员变更回写
 - 员工任务列表排序、课程详情、章节完成幂等、未知章节和越权 404
 - 发布批次合格人数/待复查/进行中补训读模型，以及员工最近 10 条成绩
+- LangGraph 评分样本（正确、同义表达、漏讲、事实错误）、价格否定和非法模型候选
+- 对练章节门槛、预览不落库、轮次幂等/恢复、失败/超时/无效输出重试
+- 并发轮次编号、同 `client_round_id` 冲突、复练推进到待复查并冻结证据
+
+当前 `uv run pytest` 共 **67 passed**。
 
 MySQL 迁移和真实连接由以下命令验证（不使用 SQLite 代替）：
 
@@ -232,9 +275,9 @@ uv run python -m app.seed
 uv run python -m app.seed
 ```
 
-T003 另在临时 MySQL 8.0 库验证了审校发布、名单快照、员工续学，以及并发克隆产生唯一版本号、并发相同幂等键只产生一个发布批次；本卡没有新增 DDL。
+T003 另在临时 MySQL 8.0 库验证了审校发布、名单快照、员工续学，以及并发克隆产生唯一版本号、并发相同幂等键只产生一个发布批次；T004 验证了并发不同 `client_round_id` 分配轮次 1/2，同一 `client_round_id` 并发返回 `409 SCORING_IN_PROGRESS`/`201` 且只写一份成绩。两卡均没有新增 DDL。
 
-## 路由扩展约定（交给 T004–T005）
+## 路由扩展约定（交给 T005）
 
 1. 在 `app/api/routers/` 新建领域路由，例如 `courses.py`、`roleplay.py`。
 2. 依赖注入使用公共类型：
@@ -257,6 +300,13 @@ T003 另在临时 MySQL 8.0 库验证了审校发布、名单快照、员工续�
 - T004 写正式成绩时，在短事务内同时更新 `assignments.status`、`last_score`、`best_score`、`qualified_at` 和 `state_version`；状态派生可复用 `app/services/learning.py` 的 `derive_assignment_status`。
 - T005 的补训/复查写入 `retrains` 后，同样要刷新 `assignments.status` 和 `state_version`；发布批次详情和员工列表已返回 `open_retrain` 读模型。
 - `GET /hq/releases/{id}` 的 `qualified_in_window`、`pending_review`、`open_retrains` 已按当前表数据计算；T005 的 48 小时统计接口（HQ 与店长共用结构）仍需按 M1 §6.8/§7 实现。
+
+### T004 交接给 T005
+
+- T004 已写入 `roleplay_attempts`，并同步维护 `assignments.last_score`、`best_score`、`last_attempt_at`、`first_passed_at`、`qualified_at`、`status` 和 `state_version`。
+- 存在进行中补训时，正式复练会把 `retrains.status` 推进为 `submitted_unfixed` 或 `fixed_pending_review`，写入 `evidence_round_no`/`evidence_attempt_id`，并递增 `version`；进入待复查后证据冻结。
+- T005 指派补训时使用当前 `roleplay_sessions.last_round_no` 作为 `baseline_round_no`；确认/驳回使用 `expected_version` 和冻结的 `evidence_attempt_id`，不要重新选择最新成绩。
+- 员工任务详情已返回最近 10 条成绩和 `open_retrain`；T005 写复查后继续沿用同一状态派生。
 
 ## 与 M1 §4.2 的有意字段差异（T003–T005 交接）
 
@@ -281,7 +331,7 @@ Can't create UNDO tablespace innodb_undo_001 since './undo_001' already exists.
 Data Dictionary initialization failed.
 ```
 
-已确认与空目录、`--no-defaults`、外部 `innodb_undo_directory` 无关，属于本机 MySQL 安装/数据字典问题，不是迁移脚本问题。T002 迁移与 T003 业务接口的真实验证使用本机已有的 `mysql:8.0.46` Docker 镜像；T003 没有新增 DDL，迁移和模型继续按 MySQL 8.4 LTS 兼容方式编写。换到可用的 8.4 实例后，只需改 `.env` 中的两个 URL，重跑：
+已确认与空目录、`--no-defaults`、外部 `innodb_undo_directory` 无关，属于本机 MySQL 安装/数据字典问题，不是迁移脚本问题。T002 迁移、T003 课程接口与 T004 对练接口的真实验证使用本机已有的 `mysql:8.0.46` Docker 镜像；T003/T004 都没有新增 DDL，迁移和模型继续按 MySQL 8.4 LTS 兼容方式编写。T004 的评分依赖 `langgraph`，由 `uv sync` 安装；M1 不配置真实模型密钥。换到可用的 8.4 实例后，只需改 `.env` 中的两个 URL，重跑：
 
 ```bash
 uv run alembic upgrade head

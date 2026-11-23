@@ -13,6 +13,7 @@ dependencies = [
   "alembic>=1.14",
   "python-ulid>=3.0.0",
   "cryptography>=44.0.0",
+  "langgraph>=1.0.8",
 ]
 
 [dependency-groups]

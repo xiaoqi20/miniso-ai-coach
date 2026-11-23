@@ -8,10 +8,10 @@
 
 ## 交付与验收
 
-- [ ] 创建会话时校验参与人和发布批次，绑定已发布的课程和评分规则版本。轮次顺序与重试结果在刷新或服务重启后可恢复。
-- [ ] 提供可重复的模型替身和「端盒 6 个不重复」样本，覆盖正确、同义表达、漏讲、事实错误。业务层按绑定规则核验命中、缺失和证据，产出可解释成绩。
-- [ ] 模型调用在事务外。核验后在同一短事务内写正式成绩及复练结果。重复提交返回同一份成绩，并发轮次按契约有序写入或返回冲突，过期结果不会覆盖当前补训状态。
-- [ ] 为漏讲保留补训待办，改正后推进至待复查。模型调用失败或输出无效时保留已保存轮次，允许重试，且不产生正式成绩。
+- [x] 创建会话时校验参与人和发布批次，绑定已发布的课程和评分规则版本。轮次顺序与重试结果在刷新或服务重启后可恢复。
+- [x] 提供可重复的模型替身和「端盒 6 个不重复」样本，覆盖正确、同义表达、漏讲、事实错误。业务层按绑定规则核验命中、缺失和证据，产出可解释成绩。
+- [x] 模型调用在事务外。核验后在同一短事务内写正式成绩及复练结果。重复提交返回同一份成绩，并发轮次按契约有序写入或返回冲突，过期结果不会覆盖当前补训状态。
+- [x] 为漏讲保留补训待办，改正后推进至待复查。模型调用失败或输出无效时保留已保存轮次，允许重试，且不产生正式成绩。
 
 ## T002 公共依赖接入说明（2026-11-23 返工后）
 
@@ -30,4 +30,26 @@
 
 ## 交付记录
 
-认领后在此登记交付、验证和 Codex 验收结论。 [记录模板](TEMPLATE.md)
+- 认领：2026-11-23，QoderCN，`qoder`。
+- 变更文件：
+  - `backend/app/schemas/roleplay.py`：预览与正式轮次请求，`client_round_id` UUID 校验。
+  - `backend/app/services/roleplay.py`：会话创建/恢复、预览、轮次分配、成绩落库、补训推进。
+  - `backend/app/services/roleplay_scoring.py`：LangGraph `StateGraph` 评分图、确定性模型替身、规则核验与四维计分。
+  - `backend/app/api/routers/staff_roleplay.py`：M1 §6.6.4–§6.6.7；`main.py` 注册。
+  - `backend/tests/test_roleplay.py`、`test_roleplay_scoring.py`：T004 接口、样本、失败和并发测试。
+  - `backend/pyproject.toml`、`uv.lock`：新增 `langgraph`；`backend/README.md` 更新 T004 说明与 T005 交接。
+- 提交 / PR：T004 成果提交到 `qoder` 分支；没有新增迁移。
+- 接口范围：创建/恢复对练会话、示例话术预览、恢复已保存轮次、提交正式轮次。
+- 验证命令与结果：
+  - `cd backend && uv run pytest`：**67 passed**（T003 基线 50 + T004 新增 17）。
+  - `cd backend && uv run python -m compileall -q app tests`：通过；新增 T004 文件 Ruff 检查通过。
+  - 四个契约样本：正确 `99`、同义表达 `91`、漏讲 `99` 但 `fact_box_rule` 一票否决、事实错误 `69` 且 `买一送一` 红线；价格否定防护通过。
+  - 故障路径：模型不可用 `503`、超时 `503`、输出无效 `502`，均保留 `failed` 轮次且不写成绩；同 `client_round_id` 重试成功。
+  - MySQL 8.0.46 临时库：并发不同 `client_round_id` 得到轮次 1/2，同一键并发得到 `409 SCORING_IN_PROGRESS`/`201`，数据库只有对应成绩；任务 `last_score/best_score=99`、`qualified_at` 写入、`state_version` 递增。
+  - 补训推进：`pending` → `submitted_unfixed` → `fixed_pending_review`，`version` 递增；进入待复查后后续成绩不再改写证据。
+- 未验证 / 环境限制：
+  - M1 只使用确定性模型替身，未接真实模型或 LangSmith 实验；真实提供方超时/重试和结构化输出留到 M2。
+  - 本机原生 MySQL 8.4.8 仍无法启动；T004 无 DDL，接口在 MySQL 8.0.46 验证，T002 迁移基线由 Codex 在 MySQL 8.4.13 验证。
+  - 临时 MySQL 库 `shouke_t004` 由本机权限分类器阻止自动删除，待用户确认后清理。
+  - 前端 T006/T007 未改动；按规范由 Antigravity App 领取。
+- 接口示例：见 [backend/README.md](../../../backend/README.md) 的「T004 对练与评分接口」。
