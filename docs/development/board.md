@@ -5,10 +5,10 @@
 | 任务 | 负责范围 | 前置任务 | 状态 | 领取资格 | 承接 Agent | 分支 / 工作树 | 更新时间 | 交付 / 阻塞说明 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | [T001](tasks/T001-contract.md) | 身份、业务状态及接口契约 | — | 已完成 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | v1.0 契约已验收，已纳入 qoder 基线；原型重构与 AGENTS/skills 未包含 |
-| [T002](tasks/T002-backend-foundation.md) | 后端、数据库及会话底座 | T001 | 待验收 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | 四项返工已完成：门店范围过滤、鉴权事务边界、迁移 URL 转义、写请求与 Secure Cookie；32 项测试通过，详见任务卡 |
-| [T003](tasks/T003-course-delivery.md) | 审校发布与员工学习 API | T002 | 排队 | 开放 | — | — | — | — |
-| [T004](tasks/T004-roleplay.md) | 对练、评分及复练回写 | T002 | 排队 | 开放 | — | — | — | — |
-| [T005](tasks/T005-store-review.md) | 店长补训、复查及统计 API | T002 | 排队 | 开放 | — | — | — | — |
+| [T002](tasks/T002-backend-foundation.md) | 后端、数据库及会话底座 | T001 | 已完成 | 开放 | QoderCN / Codex 验收 | qoder | 2026-11-23 | `3bc9489` 已纳入 qoder 基线；Codex 独立复跑 32 项测试及 MySQL 8.4.13，四项返工通过 |
+| [T003](tasks/T003-course-delivery.md) | 审校发布与员工学习 API | T002 | 待领取 | 开放 | — | — | 2026-11-23 | T002 已验收 |
+| [T004](tasks/T004-roleplay.md) | 对练、评分及复练回写 | T002 | 待领取 | 开放 | — | — | 2026-11-23 | T002 已验收 |
+| [T005](tasks/T005-store-review.md) | 店长补训、复查及统计 API | T002 | 待领取 | 开放 | — | — | 2026-11-23 | T002 已验收 |
 | [T006](tasks/T006-employee-h5.md) | Vue 公共入口与员工 H5 | T001 | 待领取 | Antigravity App 专属 | — | — | 2026-11-23 | T001 已验收；仅 Antigravity App 可领取 |
 | [T007](tasks/T007-operations-ui.md) | 总部 PC 与店长 H5 | T006 | 排队 | Antigravity App 专属 | — | — | — | — |
 | [T008](tasks/T008-e2e.md) | 三角色闭环联调与验收 | T003、T004、T005、T007 | 排队 | 开放 | — | — | — | — |
