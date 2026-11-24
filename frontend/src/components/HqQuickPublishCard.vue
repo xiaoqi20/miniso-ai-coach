@@ -6,7 +6,7 @@ import { useToast } from '@/composables/useToast'
 import { MOCK_STORES } from '@/mock/seed'
 import type { HqPublishReleasePayload, HqReviewChecklist } from '@/types/api'
 import { createClientUuid } from '@/utils/assignment'
-import { buildCourseRubricFromForm } from '@/utils/courseRubric'
+import { buildCourseRubricFromForm, validateQuickCourseInput } from '@/utils/courseRubric'
 import { formatApiError, type FormattedApiError } from '@/utils/errors'
 
 /**
@@ -145,42 +145,34 @@ async function submitCourse(publishNow: boolean): Promise<void> {
   const existingTx = pendingTx.value
 
   if (!existingTx) {
-    const name = form.name.trim()
-    if (!name) {
+    const missingFields = validateQuickCourseInput({
+      name: form.name,
+      price: form.price,
+      cross: form.cross,
+      facts: form.facts,
+      desc: form.desc,
+    })
+    if (missingFields.length > 0) {
       submitError.value = {
-        title: '请填写新品名称',
-        detail: '新品名称为必填项，用于门店任务卡与学习详情页展示。',
+        title: publishNow
+          ? '缺少经审校的完整课程内容，无法直接发布'
+          : '课程基础内容不完整，暂不能保存为服务端草稿',
+        detail: `评分规则随课程版本创建即绑定且不可单独修改，请先补全「${missingFields.join('、')}」后再提交。`,
         code: 'VALIDATION_ERROR',
         requestId: '',
         shouldRefresh: false,
       }
       return
     }
-    if (publishNow) {
-      const missingFields: string[] = []
-      if (!form.price.trim()) missingFields.push('零售价')
-      if (!form.facts.trim()) missingFields.push('必考核对事实点')
-      if (!form.desc.trim()) missingFields.push('标准卖点与话术规范')
-      if (missingFields.length > 0) {
-        submitError.value = {
-          title: '缺少经审校的完整课程内容，无法直接发布',
-          detail: `请先补全「${missingFields.join('、')}」，或点击「存为待审校草稿」停留在草稿态继续完善。`,
-          code: 'VALIDATION_ERROR',
-          requestId: '',
-          shouldRefresh: false,
-        }
-        return
+    if (publishNow && !allChecklistConfirmed.value) {
+      submitError.value = {
+        title: '审校清单尚未全部确认',
+        detail: '请先勾选人工审校确认（零售价、规格购买规则、禁用红线）后再提交发布。',
+        code: 'REVIEW_CHECKLIST_INCOMPLETE',
+        requestId: '',
+        shouldRefresh: false,
       }
-      if (!allChecklistConfirmed.value) {
-        submitError.value = {
-          title: '审校清单尚未全部确认',
-          detail: '请先勾选人工审校确认（零售价、规格购买规则、禁用红线）后再提交发布。',
-          code: 'REVIEW_CHECKLIST_INCOMPLETE',
-          requestId: '',
-          shouldRefresh: false,
-        }
-        return
-      }
+      return
     }
   }
 
@@ -193,19 +185,15 @@ async function submitCourse(publishNow: boolean): Promise<void> {
       const name = form.name.trim()
       const skuCode =
         form.sku_code.trim() || `MINISO-SKU-${Date.now().toString(36).toUpperCase().slice(-6)}`
-      const price = form.price.trim() || '以门店价签为准'
+      const price = form.price.trim()
       const cross = form.cross.trim()
       const facts = form.facts.trim()
       const desc = form.desc.trim()
 
       const rubric = buildCourseRubricFromForm({ name, price, cross, facts, desc })
-      const speech =
-        desc ||
-        `这款「${name}」零售价 ${price}${facts ? `，必考卖点包括：${facts}` : ''}。${
-          cross ? `结账时可顺手推荐搭配「${cross}」提升连带。` : '接待顾客时请清晰介绍核心卖点与实用优势。'
-        }`
+      const speech = desc
       const actions: string[] = [
-        `价格与必考事实：清晰传达零售价 ${price}${facts ? `、${facts}` : ''}。`,
+        `价格与必考事实：清晰传达零售价 ${price}、${facts}。`,
       ]
       if (cross) {
         actions.push(`收银连带：主动推荐搭配「${cross}」提升客单。`)

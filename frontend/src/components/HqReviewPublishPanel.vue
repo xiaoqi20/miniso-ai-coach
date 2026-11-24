@@ -21,6 +21,8 @@ const {
   lastPublished = null,
   lastPublishReplayed = false,
   actionError = null,
+  reviewBlockers = [],
+  hasUnsavedDraft = false,
 } = defineProps<{
   version: HqCourseVersionDetail
   reviewing?: boolean
@@ -28,6 +30,8 @@ const {
   lastPublished?: HqPublishReleasePayload | null
   lastPublishReplayed?: boolean
   actionError?: FormattedApiError | null
+  reviewBlockers?: readonly string[]
+  hasUnsavedDraft?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -159,6 +163,19 @@ function handlePrepareNewPublish(): void {
       </div>
 
       <template v-if="isDraft">
+        <div
+          v-if="hasUnsavedDraft || reviewBlockers.length > 0"
+          class="warn-box"
+          role="status"
+          data-testid="hq-review-blockers"
+        >
+          <strong>审校前置门槛未满足：</strong>
+          <ul class="blocker-list">
+            <li v-if="hasUnsavedDraft">草稿有未保存的编辑内容，请先点击「保存草稿变更」。</li>
+            <li v-for="reason in reviewBlockers" :key="reason">{{ reason }}</li>
+          </ul>
+        </div>
+
         <div class="checklist-box">
           <label class="check-item">
             <input
@@ -444,6 +461,14 @@ function handlePrepareNewPublish(): void {
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 13px;
+}
+
+.blocker-list {
+  margin: 6px 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
 }
 
 .field-group {

@@ -9,6 +9,8 @@ import { useSession } from '@/composables/useSession'
 import { mockPublishHqCourseVersion } from '@/mock/hq'
 import { mockDevLogin, resetMockState } from '@/mock/server'
 import { createAppRouter } from '@/router'
+import { createClientUuid } from '@/utils/assignment'
+import { buildCourseRubricFromForm } from '@/utils/courseRubric'
 
 async function waitForSelector(wrapper: ReturnType<typeof mount>, selector: string): Promise<void> {
   await vi.waitFor(
@@ -183,13 +185,23 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
     const wrapper = mount(App, { global: { plugins: [router] } })
     await flushPromises()
 
-    // 0. 仅填名称缺少价格/事实/卖点时，拒绝一键发布，允许存为待审校草稿
+    // 0. 仅填名称缺少价格/事实/卖点时，快捷入口的直发与存草稿均应拦截，禁止写入占位规则草稿
     await wrapper.find('[data-testid="hq-quick-name"]').setValue('待完善新品草稿')
     await wrapper.find('[data-testid="hq-quick-check-all"]').setValue(true)
     await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="hq-quick-error"]').text()).toContain('缺少经审校的完整课程内容')
 
+    await wrapper.find('[data-testid="hq-quick-save-draft-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-quick-error"]').text()).toContain('课程基础内容不完整')
+    const afterBlockedCourses = await hqApi.listHqCourses()
+    expect(afterBlockedCourses.items.some((c) => c.name === '待完善新品草稿')).toBe(false)
+
+    // 补齐价格、必考事实与卖点话术后，「存为待审校草稿」可成功落库且课件与评分规则一致
+    await wrapper.find('[data-testid="hq-quick-price"]').setValue('¥49.00')
+    await wrapper.find('[data-testid="hq-quick-facts"]').setValue('防滑底座, 加厚材质')
+    await wrapper.find('[data-testid="hq-quick-desc"]').setValue('零售价 49 元，采用加厚材质和防滑底座。')
     await wrapper.find('[data-testid="hq-quick-save-draft-btn"]').trigger('click')
     await flushPromises()
     const draftCourses = await hqApi.listHqCourses()
@@ -353,6 +365,144 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
     const matched = staffList.items.filter((a) => a.course.name === '便携折叠收纳箱')
     expect(matched).toHaveLength(1)
     expect(matched[0].release_id).toBe(firstPublishReleaseId)
+
+    wrapper.unmount()
+  })
+
+  it('P1 二次复验回归：售价 39 元与必考规格「宽度 39 厘米」同数字共存，漏讲规格不得通关、完整复述才通关', async () => {
+    await mockDevLogin('usr_linmin')
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/hq')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="hq-quick-name"]').setValue('宽体透明收纳盒')
+    await wrapper.find('[data-testid="hq-quick-sku"]').setValue('MINISO-WIDE-39')
+    await wrapper.find('[data-testid="hq-quick-price"]').setValue('¥39.00')
+    await wrapper.find('[data-testid="hq-quick-cross"]').setValue('8元标签贴')
+    await wrapper
+      .find('[data-testid="hq-quick-facts"]')
+      .setValue('零售价 39 元, 透明亚克力材质, 宽度 39 厘米')
+    await wrapper
+      .find('[data-testid="hq-quick-desc"]')
+      .setValue('这款宽体透明收纳盒零售价 39 元，透明亚克力材质且宽度 39 厘米，放文件文具都很宽敞。')
+    await wrapper.find('[data-testid="hq-quick-check-all"]').setValue(true)
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+
+    // 1. 核对评分规则保留了全部 3 条必考事实（售价去重，同数字「宽度 39 厘米」完整保留）
+    const courses = await hqApi.listHqCourses()
+    const wideCourse = courses.items.find((c) => c.sku_code === 'MINISO-WIDE-39')!
+    const detail = await hqApi.getHqCourseDetail(wideCourse.course_id)
+    const rubric = detail.versions[0].rubric!
+    expect(rubric.required_facts.map((f) => f.label)).toEqual([
+      '零售价 39 元',
+      '透明亚克力材质',
+      '宽度 39 厘米',
+    ])
+    expect(rubric.demo_pitch).toContain('宽度 39 厘米')
+
+    // 2. 切换员工林小美完成学习并进入正式对练：漏讲「宽度 39 厘米」应一票否决（failed），完整复述才通关（passed）
+    await mockDevLogin('usr_linxiaomei')
+    const staffList = await staffApi.listStaffAssignments()
+    const wideAsg = staffList.items.find((a) => a.course.name === '宽体透明收纳盒')!
+    await staffApi.completeStaffChapter(wideAsg.assignment_id, 'ch1')
+    const sessionRes = await staffApi.createOrGetRoleplaySession(wideAsg.assignment_id)
+
+    // 对照 A：只报 39 元和透明亚克力材质、漏讲宽度 -> 必须未通关且任务状态为 failed
+    const missedRound = await staffApi.submitRoleplayRound(sessionRes.session.id, {
+      client_round_id: createClientUuid(),
+      answer_text:
+        '您好，推荐您看看这款宽体透明收纳盒！零售价 39 元，透明亚克力材质做工实用性价比高，结账可以顺手搭配 8元标签贴一起组合使用，您放心试试看，我可以帮您挑选哦！',
+      question_variant: 'default',
+    })
+    expect(missedRound.attempt.passed).toBe(false)
+    expect(missedRound.attempt.missed_required_facts.map((f) => f.label)).toContain('宽度 39 厘米')
+    expect(missedRound.assignment.status).toBe('failed')
+
+    // 对照 B：完整复述含「宽度 39 厘米」的金牌示范 -> 全部命中并正式通关
+    const passedRound = await staffApi.submitRoleplayRound(sessionRes.session.id, {
+      client_round_id: createClientUuid(),
+      answer_text: rubric.demo_pitch,
+      question_variant: 'default',
+    })
+    expect(passedRound.attempt.passed).toBe(true)
+    expect(passedRound.attempt.missed_required_facts).toHaveLength(0)
+    expect(passedRound.assignment.status).toBe('passed')
+
+    wrapper.unmount()
+  })
+
+  it('P2 二次复验回归：课程工作台拦截占位/缺项或价格与评分规则不一致的草稿，补齐一致后才可审校发布', async () => {
+    await mockDevLogin('usr_linmin')
+
+    // 1. 构造一门仅含占位评分规则与无数字价格的缺项草稿，验证工作台审校拦截
+    const placeholderRubric = buildCourseRubricFromForm({
+      name: '占位残缺草稿',
+      price: '',
+      cross: '',
+      facts: '',
+      desc: '',
+    })
+    const createdBad = await hqApi.createHqCourse({
+      sku_code: 'MINISO-BAD-DRAFT',
+      name: '占位残缺草稿',
+      content: {
+        product: { name: '占位残缺草稿', summary: '', price: '以门店价签为准', tag: '', icon: 'box' },
+        chapters: [
+          { key: 'ch1', short: '01', title: '空章节', preview: '', speech: '占位口播', actions: [], mantra: '' },
+        ],
+      },
+      rubric: placeholderRubric,
+    })
+
+    const router = createAppRouter(createMemoryHistory())
+    await router.push(`/hq/courses/${createdBad.course.id}`)
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    await waitForSelector(wrapper, '[data-testid="hq-review-blockers"]')
+
+    await wrapper.find('[data-testid="hq-check-price"]').setValue(true)
+    await wrapper.find('[data-testid="hq-check-spec"]').setValue(true)
+    await wrapper.find('[data-testid="hq-check-redline"]').setValue(true)
+    await wrapper.find('[data-testid="hq-submit-review-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="hq-action-error"]').text()).toContain('草稿内容或评分规则尚未满足审校门槛')
+    expect(wrapper.find('[data-testid="hq-reviewed-summary"]').exists()).toBe(false)
+
+    // 2. 在 79 元保温杯草稿中将课件售价误改为 99 元并保存 -> 课件与规则价格不一致时应拦截审校；改回 79 元保存后可正常审校发布
+    await router.push('/hq/courses/crs_thermos')
+    await waitForSelector(wrapper, '[data-testid="hq-input-product-price"]')
+
+    await wrapper.find('[data-testid="hq-input-product-price"]').setValue('¥99.00')
+    await wrapper.find('[data-testid="hq-save-draft-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-review-blockers"]').text()).toContain('不一致')
+
+    await wrapper.find('[data-testid="hq-check-price"]').setValue(true)
+    await wrapper.find('[data-testid="hq-check-spec"]').setValue(true)
+    await wrapper.find('[data-testid="hq-check-redline"]').setValue(true)
+    await wrapper.find('[data-testid="hq-submit-review-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-action-error"]').text()).toContain('不一致')
+    expect(wrapper.find('[data-testid="hq-reviewed-summary"]').exists()).toBe(false)
+
+    // 修正售价回 ¥79.00 并保存草稿，课件与评分规则重新一致 -> 审校通过
+    await wrapper.find('[data-testid="hq-input-product-price"]').setValue('¥79.00')
+    await wrapper.find('[data-testid="hq-save-draft-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-review-blockers"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="hq-check-price"]').setValue(true)
+    await wrapper.find('[data-testid="hq-check-spec"]').setValue(true)
+    await wrapper.find('[data-testid="hq-check-redline"]').setValue(true)
+    await wrapper.find('[data-testid="hq-submit-review-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-reviewed-summary"]').exists()).toBe(true)
 
     wrapper.unmount()
   })

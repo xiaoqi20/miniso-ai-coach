@@ -15,6 +15,7 @@ import type {
   HqPublishRequest,
   HqReviewChecklist,
 } from '@/types/api'
+import { validateCourseVersionForReview } from '@/utils/courseRubric'
 import { formatApiError, type FormattedApiError } from '@/utils/errors'
 import { saveRecentReleaseRef } from '@/utils/hqReleases'
 
@@ -33,6 +34,7 @@ const saving = shallowRef(false)
 const cloning = shallowRef(false)
 const reviewing = shallowRef(false)
 const publishing = shallowRef(false)
+const hasUnsavedDraft = shallowRef(false)
 const lastPublished = shallowRef<HqPublishReleasePayload | null>(null)
 const lastPublishReplayed = shallowRef(false)
 
@@ -40,6 +42,12 @@ const activeVersion = computed<HqCourseVersionDetail | null>(() => {
   const list = detail.value?.versions ?? []
   if (list.length === 0) return null
   return list.find((v) => v.id === selectedVersionId.value) ?? list[list.length - 1]
+})
+
+const reviewBlockers = computed<readonly string[]>(() => {
+  const ver = activeVersion.value
+  if (!ver || ver.status !== 'draft') return []
+  return validateCourseVersionForReview(ver)
 })
 
 function statusLabel(status: CourseVersionStatus): { text: string; cls: string } {
@@ -125,6 +133,27 @@ async function handleReview(payload: {
 }): Promise<void> {
   const ver = activeVersion.value
   if (!ver || reviewing.value) return
+  if (hasUnsavedDraft.value) {
+    actionError.value = {
+      title: '请先保存草稿变更再提交审校',
+      detail: '检测到当前草稿存在未保存的修改，请先点击「保存草稿变更」后再执行人工审校。',
+      code: 'UNSAVED_DRAFT',
+      requestId: '',
+      shouldRefresh: false,
+    }
+    return
+  }
+  const blockers = validateCourseVersionForReview(ver)
+  if (blockers.length > 0) {
+    actionError.value = {
+      title: '草稿内容或评分规则尚未满足审校门槛',
+      detail: `${blockers.join('；')}。请补齐并确认课件与评分规则一致后再审校发布。`,
+      code: 'CONTENT_INCOMPLETE',
+      requestId: '',
+      shouldRefresh: false,
+    }
+    return
+  }
   reviewing.value = true
   actionError.value = null
   try {
@@ -273,6 +302,7 @@ watch(
             :version="activeVersion"
             :saving="saving"
             @save="handleSaveDraft"
+            @dirty-change="(dirty) => (hasUnsavedDraft = dirty)"
           />
           <HqReviewPublishPanel
             :version="activeVersion"
@@ -281,6 +311,8 @@ watch(
             :last-published="lastPublished"
             :last-publish-replayed="lastPublishReplayed"
             :action-error="actionError"
+            :review-blockers="reviewBlockers"
+            :has-unsaved-draft="hasUnsavedDraft"
             @review="handleReview"
             @publish="handlePublish"
             @open-release="(rid) => router.push(`/hq/releases/${encodeURIComponent(rid)}`)"

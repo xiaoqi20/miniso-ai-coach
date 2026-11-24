@@ -13,6 +13,7 @@ const { version, saving = false } = defineProps<{
 
 const emit = defineEmits<{
   save: [content: CourseContent]
+  dirtyChange: [dirty: boolean]
 }>()
 
 const editable = computed(() => version.status === 'draft')
@@ -43,6 +44,14 @@ watch(
 
 const isDirty = computed(
   () => JSON.stringify(draft) !== JSON.stringify(version.content),
+)
+
+watch(
+  isDirty,
+  (dirty) => {
+    emit('dirtyChange', dirty)
+  },
+  { immediate: true },
 )
 
 function updateActionsText(index: number, raw: string): void {
