@@ -1,4 +1,14 @@
-import type { CourseContent, StoreRef, UserRole } from '@/types/api'
+import type {
+  CourseContent,
+  RubricFactRule,
+  RubricGroupsFactRule,
+  RubricPriceFactRule,
+  RubricRules,
+  StoreRef,
+  UserRole,
+} from '@/types/api'
+
+export type { RubricFactRule, RubricGroupsFactRule, RubricPriceFactRule, RubricRules }
 
 /**
  * M1 附录 A 开发用户与测试数据（与 backend/app/seed_data.py 保持一致）。
@@ -17,47 +27,6 @@ export interface MockStoreSeed {
   code: string
   name: string
   active: boolean
-}
-
-export interface RubricPriceFactRule {
-  key: string
-  label: string
-  type: 'price'
-  required?: boolean
-  patterns: string[]
-  negation_guard?: boolean
-}
-
-export interface RubricGroupsFactRule {
-  key: string
-  label: string
-  type: 'groups'
-  required?: boolean
-  groups: string[][]
-}
-
-export type RubricFactRule = RubricPriceFactRule | RubricGroupsFactRule
-
-export interface RubricRules {
-  schema_version: number
-  pass_threshold: number
-  weights: Record<'selling' | 'objection' | 'cross_sell' | 'affinity', number>
-  required_facts: RubricFactRule[]
-  dimensions: Record<
-    'selling' | 'objection' | 'cross_sell' | 'affinity',
-    { label: string; keywords: string[] }
-  >
-  redlines: Array<{ term: string; reason: string }>
-  scenario: {
-    persona_name: string
-    persona_style: string
-    question: string
-    alt_question: string
-    happy_reply: string
-    concern_reply: string
-  }
-  average_pitch: string
-  demo_pitch: string
 }
 
 export const MOCK_STORES: MockStoreSeed[] = [
@@ -112,7 +81,7 @@ export const DEV_USERS: MockUserSeed[] = [
     role: 'store_manager',
     title: '北京路店长',
     stores: [{ id: 'store_bj', name: '北京路旗舰店', role: 'store_manager' }],
-    hint: '主路径店长（T007 扩展入口）',
+    hint: '主路径店长 · 查看 48h 统计、指派补训与复查确认',
   },
   {
     id: 'usr_zhangtao',
@@ -120,7 +89,7 @@ export const DEV_USERS: MockUserSeed[] = [
     role: 'store_manager',
     title: '值班副店长',
     stores: [{ id: 'store_bj', name: '北京路旗舰店', role: 'store_manager' }],
-    hint: '第二店长（T007 扩展入口）',
+    hint: '第二店长 · 验证并发复查乐观锁冲突',
   },
   {
     id: 'usr_linmin',
@@ -128,7 +97,7 @@ export const DEV_USERS: MockUserSeed[] = [
     role: 'hq_ops',
     title: '总部培训师',
     stores: [],
-    hint: '主路径总部审校人（T007 扩展入口）',
+    hint: '主路径总部运营 · 新品草稿审校、定向发布与统计',
   },
   {
     id: 'usr_zhouyi',
@@ -136,7 +105,7 @@ export const DEV_USERS: MockUserSeed[] = [
     role: 'hq_ops',
     title: '企划审校',
     stores: [],
-    hint: '第二总部账号（T007 扩展入口）',
+    hint: '第二总部账号 · 验证草稿 revision 乐观锁冲突',
   },
 ]
 
@@ -283,6 +252,129 @@ export const M1_SAMPLE_INPUTS = {
   factual_error:
     '这款是正版联名毛绒公仔，59 元，端盒 6 个可能会重复，您摸摸样品，加 9.9 元配防尘挂袋，买一送一哦。',
 } as const
+
+/** Mock 预置待审校新品草稿（未发布，不影响任何门店员工任务列表，供总部 PC 开箱审校发布） */
+export const THERMOS_COURSE_CONTENT: CourseContent = {
+  product: {
+    name: '名创便携保温杯 480ml',
+    summary: '316 不锈钢内胆 · 一键弹盖直饮 · 通勤主推新品',
+    price: '¥79.00',
+    tag: '秋冬主推新品',
+    icon: 'cup',
+  },
+  chapters: [
+    {
+      key: 'ch1',
+      short: '01 核心卖点',
+      title: '316 内胆与 6 小时保温卖点',
+      preview: '食品级 316 不锈钢 · 480ml 轻量便携 · 零售价 79 元',
+      speech:
+        '这款便携保温杯采用食品级 316 不锈钢内胆，480ml 容量仅重约 230 克，支持 6 小时保温保冷，零售价 79 元，非常适合通勤和学生随身携带。',
+      actions: [
+        '材质锚点：强调 316 不锈钢内胆耐酸碱，装咖啡奶茶不易串味。',
+        '价格锚点：清晰报出零售价 79 元，对比专柜性价比优势明显。',
+      ],
+      mantra: '记忆口诀：316 内胆 + 6 小时保温 + 79 元高性价比',
+    },
+    {
+      key: 'ch2',
+      short: '02 陈列体验',
+      title: '单手弹盖演示与防漏说明',
+      preview: '中岛首位陈列 · 主动演示安全锁扣与一键弹盖',
+      speech:
+        '向顾客介绍时，先示范推开安全锁扣再单手一键弹盖，同时强调杯盖硅胶密封圈倒置不漏水，放进通勤包也安心。',
+      actions: [
+        '演示动作：递给顾客感受 230 克轻量化手感与防滑杯身。',
+        '红线提醒：严禁夸大「24 小时滚烫」或「摔不坏」等绝对化承诺。',
+      ],
+      mantra: '体验金句：一推一按单手开盖，硅胶密封放包不漏',
+    },
+    {
+      key: 'ch3',
+      short: '03 连带收银',
+      title: '杯刷杯套连带与异议应对',
+      preview: '加购 15 元便携杯套 · 化解清洗与价格顾虑',
+      speech:
+        '顾客担心窄口不好清洗时，提示大口径可拆硅胶圈设计方便冲洗，并顺手推荐 15 元针织背带杯套或海绵杯刷提升连带率。',
+      actions: [
+        '异议化解：强调大口径易清洗与 316 内胆材质差异。',
+        '连带动作：结账推荐 15 元便携杯套，日常通勤不刮花杯身。',
+      ],
+      mantra: '连带口诀：保温杯配 15 元杯套，保护杯身更好拎',
+    },
+  ],
+}
+
+export const THERMOS_RUBRIC: RubricRules = {
+  schema_version: 1,
+  pass_threshold: 85,
+  weights: {
+    selling: 0.35,
+    objection: 0.3,
+    cross_sell: 0.2,
+    affinity: 0.15,
+  },
+  required_facts: [
+    {
+      key: 'fact_price',
+      label: '零售价 79 元',
+      type: 'price',
+      patterns: ['79', '七十九'],
+      negation_guard: true,
+    },
+    {
+      key: 'fact_material',
+      label: '316 不锈钢内胆',
+      type: 'groups',
+      groups: [['316'], ['不锈钢', '内胆']],
+    },
+    {
+      key: 'fact_keep_warm',
+      label: '6 小时保温保冷',
+      type: 'groups',
+      groups: [
+        ['6', '六'],
+        ['小时', 'h'],
+        ['保温', '保冷'],
+      ],
+    },
+  ],
+  dimensions: {
+    selling: {
+      label: '卖点准确',
+      keywords: ['316', '不锈钢', '内胆', '保温', '480', '轻量'],
+    },
+    objection: {
+      label: '异议化解',
+      keywords: ['锁扣', '密封', '不漏', '清洗', '大口径', '耐酸碱'],
+    },
+    cross_sell: {
+      label: '连带引导',
+      keywords: ['杯套', '15', '杯刷', '加购', '搭配', '演示'],
+    },
+    affinity: {
+      label: '服务亲和',
+      keywords: ['您', '放心', '试试', '推荐', '方便', '哦', '可以', '帮您'],
+    },
+  },
+  redlines: [
+    { term: '治病', reason: '禁止医疗功效宣称' },
+    { term: '杀菌', reason: '非消字号禁止宣称杀菌' },
+    { term: '永久不坏', reason: '禁止绝对化质保承诺' },
+    { term: '买一送一', reason: '禁止未经授权的促销承诺' },
+  ],
+  scenario: {
+    persona_name: '通勤白领 · 阿晨',
+    persona_style: 'commuter',
+    question: '这个保温杯要 79 块，平时装咖啡会串味吗？放包里会不会漏水？',
+    alt_question: '我每天坐地铁通勤，这款保温能管多久？清洗起来方便吗？',
+    happy_reply: '316 内胆装咖啡放心多了，那我拿一个，顺便配个 15 元杯套吧。',
+    concern_reply: '我再看看其他款式的保温杯吧。',
+  },
+  average_pitch: '这款 79 元，保温效果还可以，放包里一般不会漏水。',
+  demo_pitch:
+    '您放心试试手感，这款零售价 79 元，采用食品级 316 不锈钢内胆，装咖啡也不易串味，支持 6 小时保温保冷；杯盖带安全锁扣和密封圈倒置不漏，大口径拆洗很方便，结账还可以搭配 15 元便携杯套保护杯身哦！',
+}
 
 /** 固定 Mock 发布时间锚点（符合 M1 §9.4 约定，不将当前时间直接作为发布时间） */
 export const MOCK_ANCHOR_T0 = '2026-11-24T09:00:00.000Z'

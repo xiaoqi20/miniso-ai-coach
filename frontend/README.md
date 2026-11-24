@@ -53,12 +53,11 @@ cp .env.example .env
 | --- | --- | --- | --- | --- |
 | `/login` | 公开（开发身份入口） | `auth`（移动壳） | `src/router/index.ts` | T006 |
 | `/staff`, `/staff/assignments/:assignmentId`, `/staff/assignments/:assignmentId/roleplay` | `staff` | `mobile` | `src/router/index.ts` | T006 |
-| `/manager` 及后续子路由 | `store_manager` | `mobile` | `src/router/managerRoutes.ts` | T007 |
-| `/hq` 及后续子路由 | `hq_ops` | `desktop` | `src/router/hqRoutes.ts` | T007 |
+| `/manager`, `/manager/assignments/:assignmentId` | `store_manager` | `mobile` | `src/router/managerRoutes.ts` | T007 |
+| `/hq`, `/hq/courses/:courseId`, `/hq/releases/:releaseId` | `hq_ops` | `desktop` | `src/router/hqRoutes.ts` | T007 |
 
-### T007 接入指引
+### T008 联调交接说明
 
-1. 在 `src/api/` 新增 `hq.ts`、`manager.ts`，直接复用 `src/api/client.ts` 的 `executeApi` 与 `httpRequest`（已内置 `Content-Type: application/json`、统一 `ApiClientError` 解包、401 自动失效跳转）。需要幂等键的发布、补训、复查接口通过 `headers: { 'Idempotency-Key': createClientUuid() }` 传入。
-2. 在 `src/types/api.ts` 追加总部与店长契约接口类型（保持 `snake_case`）。
-3. 替换 `src/router/hqRoutes.ts` 与 `src/router/managerRoutes.ts` 中的占位组件，可复用 `src/components/AppShellDesktop.vue`（总部 PC 壳）与 `src/components/AppShellMobile.vue`（店长 H5 壳）。
-4. 使用 `useSession()` 获取当前服务端身份与 `capabilities`，禁止通过 URL 查询参数或前端变量切换角色。
+1. **三角色同契约接口**：`src/api/auth.ts`、`src/api/staff.ts`、`src/api/hq.ts`、`src/api/manager.ts` 全部通过 `executeApi` 分发 `mock` / `real` 模式，与 `src/types/api.ts` 共用 `snake_case` 契约。写请求自动携带 `Content-Type: application/json`，发布、补训、复查接口通过 `Idempotency-Key` 幂等保护并识别 `Idempotent-Replay: true`。
+2. **Real 模式降级兼容**：在 T005 统计接口上线前，`/hq/releases/:releaseId` 若遇 `GET /hq/releases/{id}/stats` 返回 404，会自动降级展示 `GET /hq/releases/{id}` 的实时摘要而不阻断查看。
+3. **联调运行**：启动后端 FastAPI（`127.0.0.1:8000`）后，执行 `npm run dev:real` 或 `npm run build:real` 即可在同域 `/api/v1/*` 下完整联调审校发布、学习、对练、补训、复查与 48 小时统计闭环。

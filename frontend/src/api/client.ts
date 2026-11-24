@@ -68,6 +68,8 @@ export interface RequestOptions {
   headers?: Record<string, string>
   /** 显式跳过 401 自动登出回调（如初始化 /me 探测登录态时使用） */
   skipAuthRedirect?: boolean
+  /** 可选响应头读取钩子（如读取 Idempotent-Replay） */
+  onResponse?: (response: Response) => void
 }
 
 /**
@@ -103,6 +105,8 @@ export async function httpRequest<T>(
       cause instanceof Error ? `网络请求失败：${cause.message}` : '网络连接异常，请稍后重试',
     )
   }
+
+  options.onResponse?.(response)
 
   const requestId = response.headers.get('X-Request-Id') ?? ''
   if (response.status === 204) {

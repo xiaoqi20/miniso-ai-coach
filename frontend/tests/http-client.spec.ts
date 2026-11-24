@@ -59,4 +59,34 @@ describe('真实 API 客户端请求头与错误解析契约测试', () => {
     expect(apiErr.requestId).toBe('req_test_401')
     expect(expiredSpy).toHaveBeenCalledTimes(1)
   })
+
+  it('带 Idempotency-Key 的写请求正确透传请求头并识别 Idempotent-Replay 响应头', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 201,
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotent-Replay': 'true',
+          'X-Request-Id': 'req_replay_01',
+        },
+      }),
+    )
+
+    let replayed = false
+    const res = await httpRequest<{ ok: boolean }>('/hq/course-versions/crv_1/publish', {
+      method: 'POST',
+      body: { store_ids: ['store_bj'], deadline_hours: 48, expected_revision: 1 },
+      headers: { 'Idempotency-Key': '8f14e45f-eaed-4a9b-9c2f-2b1a7d0c3e11' },
+      onResponse: (raw) => {
+        replayed = raw.headers.get('Idempotent-Replay') === 'true'
+      },
+    })
+
+    expect(res.ok).toBe(true)
+    expect(replayed).toBe(true)
+    const [, init] = fetchSpy.mock.calls[0]
+    const headers = init?.headers as Record<string, string>
+    expect(headers['Content-Type']).toBe('application/json')
+    expect(headers['Idempotency-Key']).toBe('8f14e45f-eaed-4a9b-9c2f-2b1a7d0c3e11')
+  })
 })

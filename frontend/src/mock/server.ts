@@ -7,17 +7,23 @@ import {
   MOCK_ANCHOR_T0,
   MOCK_DEADLINE_T0,
   MOCK_STORES,
+  THERMOS_COURSE_CONTENT,
+  THERMOS_RUBRIC,
 } from '@/mock/seed'
 import type {
   ApiErrorEnvelope,
   AssignmentStatus,
+  AuditEventItem,
   ChapterCompleteResponse,
+  CourseContent,
+  CourseVersionStatus,
   CreateRoleplaySessionResponse,
   DevLoginResponse,
   MeResponse,
   OpenRetrain,
   PageResponse,
   QuestionVariant,
+  ReleaseStatus,
   RetrainStatus,
   RoleplayFullAttempt,
   RoleplayPreviewRequest,
@@ -27,14 +33,16 @@ import type {
   RoleplayRoundSubmitResponse,
   RoleplaySessionDetailResponse,
   RoleplaySessionRef,
+  RubricRules,
   StaffAssignmentDetailResponse,
   StaffAssignmentSummary,
   StaffAttemptSummary,
+  UserBrief,
   UserRef,
   UserRole,
 } from '@/types/api'
 
-const MOCK_STORAGE_KEY = 'shouke_m1_mock_state_v1'
+const MOCK_STORAGE_KEY = 'shouke_m1_mock_state_v2'
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type MockFaultMode =
@@ -70,31 +78,91 @@ export class MockHttpError extends Error {
   }
 }
 
-interface StoredChapterProgress {
+export interface StoredChapterProgress {
   chapter_key: string
   completed_at: string
 }
 
-interface StoredAttempt extends RoleplayFullAttempt {
+export interface StoredAttempt extends RoleplayFullAttempt {
   round_no: number
   answer_text: string
 }
 
-interface StoredRetrain {
+export interface StoredRetrain {
   id: string
   status: RetrainStatus
   focus: {
     fact_key: string
     label: string
   }
+  note: string
   baseline_round_no: number
   evidence_round_no: number | null
   evidence_attempt_id: string | null
+  issued_by: UserBrief
   issued_at: string
+  reviewed_by: UserBrief | null
+  reviewed_at: string | null
+  review_note: string | null
   version: number
 }
 
-interface StoredAssignment {
+export interface StoredCourseVersion {
+  id: string
+  course_id: string
+  version_no: number
+  status: CourseVersionStatus
+  revision: number
+  content: CourseContent
+  rubric_version_id: string
+  rubric: RubricRules
+  created_by: string
+  created_at: string
+  updated_at: string
+  reviewed_by: UserBrief | null
+  reviewed_at: string | null
+}
+
+export interface StoredCourse {
+  id: string
+  sku_code: string
+  name: string
+  created_by: string
+  created_at: string
+  versions: StoredCourseVersion[]
+}
+
+export interface StoredRelease {
+  id: string
+  course_id: string
+  course_version_id: string
+  rubric_version_id: string
+  status: ReleaseStatus
+  deadline_hours: number
+  deadline_at: string
+  published_by: UserBrief
+  published_at: string
+  target_store_ids: string[]
+}
+
+export interface StoredAuditEvent extends AuditEventItem {
+  id: string
+  entity_type: 'course_version' | 'release' | 'retrain'
+  entity_id: string
+  assignment_id?: string
+  store_id: string | null
+}
+
+export interface StoredIdempotencyRecord {
+  user_id: string
+  route: string
+  key: string
+  request_fingerprint: string
+  status_code: number
+  response_body: unknown
+}
+
+export interface StoredAssignment {
   assignment_id: string
   release_id: string
   store_id: string
@@ -112,14 +180,24 @@ interface StoredAssignment {
   retrains: StoredRetrain[]
 }
 
-interface MockDatabaseState {
+export interface MockDatabaseState {
   current_user_id: string | null
   session_expires_at: string | null
   next_round_seq: number
   next_attempt_seq: number
   next_session_seq: number
+  next_course_seq: number
+  next_release_seq: number
+  next_retrain_seq: number
+  next_audit_seq: number
   time_tick: number
+  /** 仅用于测试停用/空名单场景的门店成员覆盖，默认空 */
+  inactive_user_ids: string[]
+  courses: StoredCourse[]
+  releases: StoredRelease[]
   assignments: StoredAssignment[]
+  audit_events: StoredAuditEvent[]
+  idempotency_records: StoredIdempotencyRecord[]
 }
 
 /** 仅用于开发调试与自动化测试的下一次故障注入开关 */
@@ -172,7 +250,126 @@ function buildInitialMockState(): MockDatabaseState {
     next_round_seq: 10,
     next_attempt_seq: 10,
     next_session_seq: 10,
+    next_course_seq: 10,
+    next_release_seq: 10,
+    next_retrain_seq: 10,
+    next_audit_seq: 10,
     time_tick: 1,
+    inactive_user_ids: [],
+    courses: [
+      {
+        id: 'crs_thermos',
+        sku_code: 'MINISO-THERMOS-01',
+        name: THERMOS_COURSE_CONTENT.product.name,
+        created_by: 'usr_linmin',
+        created_at: '2026-11-24T08:40:00.000Z',
+        versions: [
+          {
+            id: 'crv_thermos_v1',
+            course_id: 'crs_thermos',
+            version_no: 1,
+            status: 'draft',
+            revision: 1,
+            content: structuredClone(THERMOS_COURSE_CONTENT),
+            rubric_version_id: 'rbn_thermos_v1',
+            rubric: structuredClone(THERMOS_RUBRIC),
+            created_by: 'usr_linmin',
+            created_at: '2026-11-24T08:40:00.000Z',
+            updated_at: '2026-11-24T08:45:00.000Z',
+            reviewed_by: null,
+            reviewed_at: null,
+          },
+        ],
+      },
+      {
+        id: 'crs_chiikawa',
+        sku_code: 'MINISO-CHIIKAWA-BOX-01',
+        name: CHIIKAWA_COURSE_CONTENT.product.name,
+        created_by: 'usr_linmin',
+        created_at: '2026-11-23T09:00:00.000Z',
+        versions: [
+          {
+            id: 'crv_chiikawa_v1',
+            course_id: 'crs_chiikawa',
+            version_no: 1,
+            status: 'published',
+            revision: 2,
+            content: structuredClone(CHIIKAWA_COURSE_CONTENT),
+            rubric_version_id: 'rbn_chiikawa_v1',
+            rubric: structuredClone(CHIIKAWA_RUBRIC),
+            created_by: 'usr_linmin',
+            created_at: '2026-11-23T09:00:00.000Z',
+            updated_at: MOCK_ANCHOR_T0,
+            reviewed_by: { id: 'usr_linmin', name: '林敏' },
+            reviewed_at: '2026-11-24T08:30:00.000Z',
+          },
+        ],
+      },
+    ],
+    releases: [
+      {
+        id: 'rls_m1_bj',
+        course_id: 'crs_chiikawa',
+        course_version_id: 'crv_chiikawa_v1',
+        rubric_version_id: 'rbn_chiikawa_v1',
+        status: 'published',
+        deadline_hours: 48,
+        deadline_at: MOCK_DEADLINE_T0,
+        published_by: { id: 'usr_linmin', name: '林敏' },
+        published_at: MOCK_ANCHOR_T0,
+        target_store_ids: ['store_bj'],
+      },
+    ],
+    audit_events: [
+      {
+        id: 'aud_m1_01',
+        action: 'course.reviewed',
+        entity_type: 'course_version',
+        entity_id: 'crv_chiikawa_v1',
+        store_id: null,
+        actor: { id: 'usr_linmin', name: '林敏' },
+        at: '2026-11-24T08:30:00.000Z',
+        payload: {
+          checklist: {
+            price_verified: true,
+            spec_verified: true,
+            redline_verified: true,
+          },
+          note: '已核对 59 元零售价、端盒 6 个不重复规则与红线词库',
+        },
+      },
+      {
+        id: 'aud_m1_02',
+        action: 'release.published',
+        entity_type: 'release',
+        entity_id: 'rls_m1_bj',
+        store_id: 'store_bj',
+        actor: { id: 'usr_linmin', name: '林敏' },
+        at: MOCK_ANCHOR_T0,
+        payload: {
+          course_id: 'crs_chiikawa',
+          course_version_id: 'crv_chiikawa_v1',
+          store_ids: ['store_bj'],
+          assigned_total: 3,
+          deadline_hours: 48,
+        },
+      },
+      {
+        id: 'aud_m1_03',
+        action: 'retrain.issued',
+        entity_type: 'retrain',
+        entity_id: 'rtn_m1_bj_chenajie_01',
+        assignment_id: 'asg_m1_bj_chenajie',
+        store_id: 'store_bj',
+        actor: { id: 'usr_liming', name: '李明' },
+        at: '2026-11-24T10:30:00.000Z',
+        payload: {
+          focus_fact_key: 'fact_box_rule',
+          note: '首轮对练漏讲端盒 6 个不重复规则，请重点补练',
+        },
+      },
+    ],
+    idempotency_records: [],
     assignments: [
       {
         assignment_id: 'asg_m1_bj_linxiaomei',
@@ -243,10 +440,15 @@ function buildInitialMockState(): MockDatabaseState {
               fact_key: 'fact_box_rule',
               label: '端盒 6 个不重复',
             },
+            note: '首轮对练漏讲端盒 6 个不重复规则，请重点补练',
             baseline_round_no: 1,
             evidence_round_no: null,
             evidence_attempt_id: null,
+            issued_by: { id: 'usr_liming', name: '李明' },
             issued_at: '2026-11-24T10:30:00.000Z',
+            reviewed_by: null,
+            reviewed_at: null,
+            review_note: null,
             version: 1,
           },
         ],
@@ -276,15 +478,22 @@ function buildInitialMockState(): MockDatabaseState {
 
 let memoryState: MockDatabaseState | null = null
 
-function loadState(): MockDatabaseState {
+export function loadState(): MockDatabaseState {
   if (memoryState) return memoryState
   const storage = getSafeStorage()
   if (storage) {
     const raw = storage.getItem(MOCK_STORAGE_KEY)
     if (raw) {
       try {
-        memoryState = JSON.parse(raw) as MockDatabaseState
-        return memoryState
+        const parsed = JSON.parse(raw) as Partial<MockDatabaseState>
+        if (
+          Array.isArray(parsed.courses) &&
+          Array.isArray(parsed.releases) &&
+          Array.isArray(parsed.assignments)
+        ) {
+          memoryState = parsed as MockDatabaseState
+          return memoryState
+        }
       } catch {
         // 存储损坏时回退为初始基线数据
       }
@@ -295,7 +504,7 @@ function loadState(): MockDatabaseState {
   return memoryState
 }
 
-function saveState(state: MockDatabaseState): void {
+export function saveState(state: MockDatabaseState): void {
   memoryState = state
   const storage = getSafeStorage()
   if (storage) {
@@ -314,7 +523,14 @@ export function resetMockState(): void {
   saveState(fresh)
 }
 
-function nextTimestamp(state: MockDatabaseState): string {
+/** 仅用于测试：临时设置停用用户列表（如测试空名单发布或离职标注） */
+export function setMockInactiveUsers(userIds: string[]): void {
+  const state = loadState()
+  state.inactive_user_ids = [...userIds]
+  saveState(state)
+}
+
+export function nextTimestamp(state: MockDatabaseState): string {
   // 在锚点时间之后单调推进毫秒级时间，确保排序和复现稳定
   const baseMs = Date.parse('2026-11-24T11:00:00.000Z')
   const iso = new Date(baseMs + state.time_tick * 1000).toISOString()
@@ -356,7 +572,7 @@ function capabilitiesForRole(role: UserRole): string[] {
   ]
 }
 
-function requireCurrentUser(state: MockDatabaseState, expectedRole?: UserRole): UserRef {
+export function requireCurrentUser(state: MockDatabaseState, expectedRole?: UserRole): UserRef {
   if (!state.current_user_id) {
     throw new MockHttpError(401, 'AUTH_REQUIRED', '请先登录服务端会话')
   }
@@ -373,7 +589,7 @@ function requireCurrentUser(state: MockDatabaseState, expectedRole?: UserRole): 
   return user
 }
 
-function findOpenRetrain(retrains: StoredRetrain[]): StoredRetrain | null {
+export function findOpenRetrain(retrains: StoredRetrain[]): StoredRetrain | null {
   for (let i = retrains.length - 1; i >= 0; i -= 1) {
     const item = retrains[i]
     if (
@@ -387,7 +603,7 @@ function findOpenRetrain(retrains: StoredRetrain[]): StoredRetrain | null {
   return null
 }
 
-function formatOpenRetrain(retrain: StoredRetrain | null): OpenRetrain | null {
+export function formatOpenRetrain(retrain: StoredRetrain | null): OpenRetrain | null {
   if (!retrain) return null
   return {
     id: retrain.id,
@@ -398,8 +614,27 @@ function formatOpenRetrain(retrain: StoredRetrain | null): OpenRetrain | null {
   }
 }
 
+export function resolveReleaseCourseVersion(
+  state: MockDatabaseState,
+  releaseId: string,
+): { course: StoredCourse; version: StoredCourseVersion } {
+  const release = state.releases.find((item) => item.id === releaseId)
+  if (release) {
+    const course = state.courses.find((item) => item.id === release.course_id)
+    const version = course?.versions.find((item) => item.id === release.course_version_id)
+    if (course && version) {
+      return { course, version }
+    }
+  }
+  const fallbackCourse = state.courses[0]
+  return { course: fallbackCourse, version: fallbackCourse.versions[0] }
+}
+
 /** 按 M1 §5.1 派生学员任务状态（与 backend/app/services/learning.py 一致） */
-function deriveStatus(asg: StoredAssignment): AssignmentStatus {
+export function deriveStatus(
+  asg: StoredAssignment,
+  requiredChapters = CHIIKAWA_COURSE_CONTENT.chapters.length,
+): AssignmentStatus {
   const openRetrain = findOpenRetrain(asg.retrains)
   if (openRetrain) {
     if (openRetrain.status === 'pending') return 'retrain_pending'
@@ -412,15 +647,14 @@ function deriveStatus(asg: StoredAssignment): AssignmentStatus {
   if (asg.qualified_at) return 'passed'
   const hasAttempt = asg.rounds.some((round) => Boolean(round.attempt))
   if (hasAttempt) return 'failed'
-  const required = CHIIKAWA_COURSE_CONTENT.chapters.length
-  if (required > 0 && asg.chapter_progress.length >= required) {
+  if (requiredChapters > 0 && asg.chapter_progress.length >= requiredChapters) {
     return 'ready_for_roleplay'
   }
   if (asg.chapter_progress.length > 0) return 'learning'
   return 'not_started'
 }
 
-function getStoreName(storeId: string): string {
+export function getStoreName(storeId: string): string {
   return MOCK_STORES.find((store) => store.id === storeId)?.name ?? storeId
 }
 
@@ -438,14 +672,14 @@ function getOwnedAssignment(
   return asg
 }
 
-function missingChapterKeys(asg: StoredAssignment): string[] {
+function missingChapterKeys(state: MockDatabaseState, asg: StoredAssignment): string[] {
+  const { version } = resolveReleaseCourseVersion(state, asg.release_id)
   const completedSet = new Set(asg.chapter_progress.map((item) => item.chapter_key))
-  return CHIIKAWA_COURSE_CONTENT.chapters
-    .map((ch) => ch.key)
-    .filter((key) => !completedSet.has(key))
+  return version.content.chapters.map((ch) => ch.key).filter((key) => !completedSet.has(key))
 }
 
-function toSummary(asg: StoredAssignment): StaffAssignmentSummary {
+function toSummary(state: MockDatabaseState, asg: StoredAssignment): StaffAssignmentSummary {
+  const { course, version } = resolveReleaseCourseVersion(state, asg.release_id)
   const sortedProgress = [...asg.chapter_progress].sort((a, b) =>
     a.completed_at.localeCompare(b.completed_at),
   )
@@ -457,18 +691,18 @@ function toSummary(asg: StoredAssignment): StaffAssignmentSummary {
       name: getStoreName(asg.store_id),
     },
     course: {
-      id: 'crs_chiikawa',
-      name: CHIIKAWA_COURSE_CONTENT.product.name,
-      tag: CHIIKAWA_COURSE_CONTENT.product.tag,
-      price: CHIIKAWA_COURSE_CONTENT.product.price,
-      chapter_count: CHIIKAWA_COURSE_CONTENT.chapters.length,
+      id: course.id,
+      name: version.content.product.name,
+      tag: version.content.product.tag,
+      price: version.content.product.price,
+      chapter_count: version.content.chapters.length,
     },
     published_at: asg.published_at,
     deadline_at: asg.deadline_at,
     status: asg.status,
     completed_chapters: sortedProgress.map((item) => item.chapter_key),
     completed_chapter_count: sortedProgress.length,
-    required_chapters: CHIIKAWA_COURSE_CONTENT.chapters.length,
+    required_chapters: version.content.chapters.length,
     last_score: asg.last_score,
     best_score: asg.best_score,
     qualified_at: asg.qualified_at,
@@ -526,7 +760,7 @@ export async function mockListStaffAssignments(): Promise<
     return a.published_at.localeCompare(b.published_at)
   })
   return {
-    items: owned.map(toSummary),
+    items: owned.map((item) => toSummary(state, item)),
     next_cursor: null,
   }
 }
@@ -537,6 +771,7 @@ export async function mockGetStaffAssignment(
   const state = loadState()
   const user = requireCurrentUser(state, 'staff')
   const asg = getOwnedAssignment(state, user.id, assignmentId)
+  const { version } = resolveReleaseCourseVersion(state, asg.release_id)
 
   const sortedProgress = [...asg.chapter_progress].sort((a, b) =>
     a.completed_at.localeCompare(b.completed_at),
@@ -570,7 +805,7 @@ export async function mockGetStaffAssignment(
       release_id: asg.release_id,
       status: asg.status,
       completed_chapters: completedChapters,
-      required_chapters: CHIIKAWA_COURSE_CONTENT.chapters.length,
+      required_chapters: version.content.chapters.length,
       last_score: asg.last_score,
       best_score: asg.best_score,
       qualified_at: asg.qualified_at,
@@ -578,9 +813,9 @@ export async function mockGetStaffAssignment(
       deadline_at: asg.deadline_at,
     },
     course_version: {
-      id: 'crv_chiikawa_v1',
-      version_no: 1,
-      content: CHIIKAWA_COURSE_CONTENT,
+      id: version.id,
+      version_no: version.version_no,
+      content: structuredClone(version.content),
     },
     progress: {
       completed_chapters: completedChapters,
@@ -599,8 +834,9 @@ export async function mockCompleteChapter(
   const state = loadState()
   const user = requireCurrentUser(state, 'staff')
   const asg = getOwnedAssignment(state, user.id, assignmentId)
+  const { version } = resolveReleaseCourseVersion(state, asg.release_id)
 
-  const validKeys = CHIIKAWA_COURSE_CONTENT.chapters.map((ch) => ch.key)
+  const validKeys = version.content.chapters.map((ch) => ch.key)
   if (!validKeys.includes(chapterKey)) {
     throw new MockHttpError(422, 'UNKNOWN_CHAPTER', '章节键不属于当前课程版本', {
       chapter_key: chapterKey,
@@ -622,7 +858,7 @@ export async function mockCompleteChapter(
 
   const completedAt = nextTimestamp(state)
   asg.chapter_progress.push({ chapter_key: chapterKey, completed_at: completedAt })
-  asg.status = deriveStatus(asg)
+  asg.status = deriveStatus(asg, validKeys.length)
   asg.state_version += 1
   saveState(state)
 
@@ -643,8 +879,9 @@ export async function mockCreateOrGetRoleplaySession(
   const state = loadState()
   const user = requireCurrentUser(state, 'staff')
   const asg = getOwnedAssignment(state, user.id, assignmentId)
+  const { version } = resolveReleaseCourseVersion(state, asg.release_id)
 
-  const missing = missingChapterKeys(asg)
+  const missing = missingChapterKeys(state, asg)
   if (missing.length > 0) {
     throw new MockHttpError(
       409,
@@ -670,10 +907,10 @@ export async function mockCreateOrGetRoleplaySession(
   return {
     session: { ...asg.roleplay_session },
     persona: {
-      name: CHIIKAWA_RUBRIC.scenario.persona_name,
-      style: CHIIKAWA_RUBRIC.scenario.persona_style,
-      question: CHIIKAWA_RUBRIC.scenario.question,
-      alt_question: CHIIKAWA_RUBRIC.scenario.alt_question,
+      name: version.rubric.scenario.persona_name,
+      style: version.rubric.scenario.persona_style,
+      question: version.rubric.scenario.question,
+      alt_question: version.rubric.scenario.alt_question,
     },
   }
 }
@@ -684,7 +921,8 @@ export async function mockPreviewRoleplay(
 ): Promise<RoleplayPreviewResponse> {
   const state = loadState()
   const user = requireCurrentUser(state, 'staff')
-  getOwnedAssignment(state, user.id, assignmentId)
+  const asg = getOwnedAssignment(state, user.id, assignmentId)
+  const { version } = resolveReleaseCourseVersion(state, asg.release_id)
 
   const answerText = String(body.answer_text ?? '').trim()
   if (!answerText) {
@@ -694,7 +932,7 @@ export async function mockPreviewRoleplay(
     throw new MockHttpError(422, 'VALIDATION_ERROR', '问题变体不存在')
   }
 
-  const scored = scoreMockAnswer(CHIIKAWA_RUBRIC, answerText)
+  const scored = scoreMockAnswer(version.rubric, answerText)
   return {
     preview: true,
     persisted: false,
@@ -751,9 +989,9 @@ export async function mockGetRoleplaySession(
   }
 }
 
-function resolveQuestionText(variant: QuestionVariant): string {
-  if (variant === 'alt') return CHIIKAWA_RUBRIC.scenario.alt_question
-  if (variant === 'default') return CHIIKAWA_RUBRIC.scenario.question
+function resolveQuestionText(rubric: RubricRules, variant: QuestionVariant): string {
+  if (variant === 'alt') return rubric.scenario.alt_question
+  if (variant === 'default') return rubric.scenario.question
   throw new MockHttpError(422, 'VALIDATION_ERROR', '问题变体不存在')
 }
 
@@ -764,9 +1002,10 @@ export async function mockSubmitRoleplayRound(
   const state = loadState()
   const user = requireCurrentUser(state, 'staff')
   const asg = findSessionOwner(state, user.id, sessionId)
+  const { version } = resolveReleaseCourseVersion(state, asg.release_id)
   const sessionRef = asg.roleplay_session!
 
-  const missing = missingChapterKeys(asg)
+  const missing = missingChapterKeys(state, asg)
   if (missing.length > 0) {
     throw new MockHttpError(
       409,
@@ -813,7 +1052,7 @@ export async function mockSubmitRoleplayRound(
 
   const now = nextTimestamp(state)
   if (!existing) {
-    const questionText = resolveQuestionText(body.question_variant)
+    const questionText = resolveQuestionText(version.rubric, body.question_variant)
     sessionRef.last_round_no += 1
     sessionRef.updated_at = now
     existing = {
@@ -873,7 +1112,7 @@ export async function mockSubmitRoleplayRound(
   }
 
   // 对已有轮次重试时必须使用服务端已保存的 answer_text，与后端 _prepare_round 一致
-  const evalResult = scoreMockAnswer(CHIIKAWA_RUBRIC, existing.answer_text)
+  const evalResult = scoreMockAnswer(version.rubric, existing.answer_text)
   state.next_attempt_seq += 1
   const scoredAt = nextTimestamp(state)
   const fullAttempt: StoredAttempt = {
@@ -925,7 +1164,7 @@ export async function mockSubmitRoleplayRound(
     openRetrain.version += 1
   }
 
-  asg.status = deriveStatus(asg)
+  asg.status = deriveStatus(asg, version.content.chapters.length)
   saveState(state)
 
   return {
