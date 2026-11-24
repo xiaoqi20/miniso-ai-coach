@@ -70,3 +70,37 @@
   - `cd frontend && npm test`：**9 个测试文件、32 项测试全部通过**（`vitest run`）。
   - `cd frontend && npm run build` & `npm run build:real`：Mock 与 Real 双模式生产构建均成功。
 - **说明**：本次三项返工后尝试唤醒内置浏览器子智能体做额外 UI 复验时遇上游服务 SSE EOF 中断；三项问题的完整组件交互与状态恢复均已通过 Vitest 32/32 专项回归测试验证，提交 Codex 复验。
+
+## Codex 复验（2026-11-24，`6ba22cb`）
+
+复验未通过。T007 退回「进行中」，由 Antigravity App 返工。T008 继续排队。
+
+- 独立复跑类型检查、9 个文件共 32 项 Vitest 测试、Mock 和 Real 构建，均通过。发布前失败和落库后丢响应沿用原版本、参数和幂等键恢复。额外在组件卸载并重新挂载后复测丢响应恢复，确认仅一次建课、原批次唯一且名单为 3 人。店长切换批次后，旧请求迟到成功或失败均未覆盖当前名单和详情入口。
+- 浏览器实测总部 1280×800、员工 390×844。39 元收纳盒和 129 元挂烫机的顾客问法、换问法和金牌示范分别绑定本商品，前轮保温杯话术串用已修复。只填新品名称时，快捷发布拒绝提交，允许保存草稿。
+
+### 返工项
+
+1. **P1｜与售价共用数字的必考规格被丢弃。** 总部录入售价 `¥39.00` 和必考事实「透明亚克力材质，宽度 39 厘米」并发布。课件保留两条，评分规则与示范却遗漏宽度。员工完成学习后，只报价格和材质，在 Mock 正式对练中获得 99 分并被记为已通关。[评分规则生成](/Users/xiaoqi/dev/shouke/frontend/src/utils/courseRubric.ts:57)
+   - 复验时核对每条必考事实是否出现在最终评分规则中。价格事实应按含义识别，售价数字不能吞掉同数值的规格。加入漏讲规格和完整复述的对照用例，核对正式成绩与任务状态。
+2. **P2｜只有商品名的草稿可在课程工作台发布。** 组件测试复现仅填名称时快捷发布被拒，存草稿后进入课程工作台，无需补齐内容即可勾选三项、审校并发布。发布版本的价格为「以门店价签为准」，仅绑定基于商品名生成的占位评分规则。[课程工作台审校](/Users/xiaoqi/dev/shouke/frontend/src/views/hq/HqCourseWorkbenchView.vue:122)
+   - 复验时从两个入口检查课程内容门槛，并确认草稿补齐后，课件和评分规则一致，才可审校发布。
+
+真实后端和企微客户端验证仍归入 T008。
+
+## Antigravity App 二次返工记录（2026-11-24，`e6b7ae3`）
+
+针对 Codex 二次复验退回的 2 项问题已完成根因修复并补齐专项回归测试：
+
+- **改动文件**：
+  - [courseRubric.ts](../../../frontend/src/utils/courseRubric.ts)：
+    1. **P1 售价同数字规格保留**：移除基于 `!s.includes(priceNum)` 的粗糙过滤，新增语义识别函数 `isPurePriceFact(label, priceNum)`，仅对纯售价表达（如「零售价 39 元」「¥39.00」）与 `fact_price` 去重；任何含相同数字的必考规格（如「宽度 39 厘米」）均保留为独立 `required_facts` 项，并通过 `buildGroupsForFactLabel` 拆分为中文字段、数字与单位同义词分组（支持厘米/cm、毫米/mm、毫升/ml、克/g、小时/h），同时将全部非价格必考事实完整写入 `demo_pitch`。
+    2. **P2 统一内容与评分规则门槛**：新增并导出 `extractValidPriceNumber`、`validateQuickCourseInput` 与 `validateCourseVersionForReview`，统一校验有效数字零售价、章节标题与口播非空、非占位规则（非仅 `fact_product_core`）、存在 `type='price'` 必考项且与课件售价一致，以及 `demo_pitch` 包含当前售价。
+  - [HqQuickPublishCard.vue](../../../frontend/src/components/HqQuickPublishCard.vue)：「存为待审校草稿」与「审校通过并发布」统一执行 `validateQuickCourseInput` 门槛，拦截缺项建草稿（防止后端一次性创建的 `rubric_versions` 永久绑定占位规则），移除 `'以门店价签为准'` 占位兜底。
+  - [HqDraftEditor.vue](../../../frontend/src/components/HqDraftEditor.vue)、[HqReviewPublishPanel.vue](../../../frontend/src/components/HqReviewPublishPanel.vue)、[HqCourseWorkbenchView.vue](../../../frontend/src/views/hq/HqCourseWorkbenchView.vue)：工作台同步编辑器未保存状态（`dirtyChange`），审校前强制校验无未保存草稿且 `validateCourseVersionForReview` 零阻塞项，并在审校面板顶部实时渲染 `data-testid="hq-review-blockers"` 阻塞提示，不满足门槛时拦截审校且不发请求。
+  - [hq-flow.spec.ts](../../../frontend/tests/hq-flow.spec.ts)：新增 2 项二次复验回归用例，覆盖（1）售价 39 元 + 必考规格「宽度 39 厘米」同时保留在评分规则与金牌示范，员工漏讲宽度被一票否决（`passed=false`、`status='failed'`），完整复述后通关（`passed=true`、`status='passed'`）；（2）工作台拦截缺项/占位规则草稿及课件售价与评分规则不一致（79 元改 99 元保存后被拦截，改回 79 元保存后放行）。
+- **返工提交**：`feat/t007-operations-ui` 分支提交 `e6b7ae3`。
+- **自动化验证结果**：
+  - `cd frontend && npm run typecheck`：通过（`vue-tsc --noEmit` 零错误）。
+  - `cd frontend && npm test`：**9 个测试文件、34 项测试全部通过**（`vitest run`）。
+  - `cd frontend && npm run build` & `npm run build:real`：Mock 与 Real 双模式生产构建均成功。
+- **说明**：本次复验已通过 Vitest 34/34 全量自动化回归与双模式构建验证，提交 Codex 复验。
