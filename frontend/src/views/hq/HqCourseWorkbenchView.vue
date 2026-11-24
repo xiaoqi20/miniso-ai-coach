@@ -49,15 +49,20 @@ function statusLabel(status: CourseVersionStatus): { text: string; cls: string }
   return { text: '已替代', cls: 'status-warn' }
 }
 
+let courseRequestSeq = 0
+
 async function loadCourse(id: string, preferredVersionId?: string): Promise<void> {
   if (!id) return
+  const reqSeq = ++courseRequestSeq
   if (!detail.value || detail.value.course.id !== id) {
+    detail.value = null
     loading.value = true
   }
   loadError.value = null
   actionError.value = null
   try {
     const res = await hqApi.getHqCourseDetail(id)
+    if (reqSeq !== courseRequestSeq || courseId.value !== id) return
     detail.value = res
     const versions = res.versions
     const keepId = preferredVersionId ?? selectedVersionId.value
@@ -67,9 +72,12 @@ async function loadCourse(id: string, preferredVersionId?: string): Promise<void
       selectedVersionId.value = versions[versions.length - 1].id
     }
   } catch (err) {
+    if (reqSeq !== courseRequestSeq || courseId.value !== id) return
     loadError.value = formatApiError(err, '加载课程详情失败')
   } finally {
-    loading.value = false
+    if (reqSeq === courseRequestSeq) {
+      loading.value = false
+    }
   }
 }
 

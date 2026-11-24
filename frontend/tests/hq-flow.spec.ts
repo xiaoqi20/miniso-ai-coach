@@ -1,9 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory } from 'vue-router'
 import App from '@/App.vue'
+import { ApiClientError } from '@/api/client'
 import * as hqApi from '@/api/hq'
+import * as staffApi from '@/api/staff'
 import { useSession } from '@/composables/useSession'
+import { mockPublishHqCourseVersion } from '@/mock/hq'
 import { mockDevLogin, resetMockState } from '@/mock/server'
 import { createAppRouter } from '@/router'
 
@@ -22,8 +25,13 @@ async function waitForSelector(wrapper: ReturnType<typeof mount>, selector: stri
 describe('总部 PC 端审校、定向发布与批次统计集成测试', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    window.sessionStorage.clear()
     resetMockState()
     useSession().resetLocalSessionState()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it('总部查看草稿 -> 保存修改 -> 审校未全勾反馈 -> 三项确认审校 -> 选门店与截止发布 -> 幂等重放 -> 查看批次结果与48h统计', async () => {
@@ -161,6 +169,130 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
 
     expect(wrapper.text()).toContain('三丽鸥联名香薰礼盒')
     expect(wrapper.text()).toContain('应训 5 人')
+
+    wrapper.unmount()
+  })
+
+  it('P1 回归：快捷发布 39 元收纳盒生成独立本品规则与示范话术，绝不串用保温杯或 Chiikawa 文案', async () => {
+    await mockDevLogin('usr_linmin')
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/hq')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="hq-quick-name"]').setValue('桌面抽屉收纳盒')
+    await wrapper.find('[data-testid="hq-quick-sku"]').setValue('MINISO-STORAGE-39')
+    await wrapper.find('[data-testid="hq-quick-price"]').setValue('¥39.00')
+    await wrapper.find('[data-testid="hq-quick-cross"]').setValue('抽屉分隔板')
+    await wrapper.find('[data-testid="hq-quick-facts"]').setValue('食品级PP材质, 可叠加防尘')
+    await wrapper
+      .find('[data-testid="hq-quick-desc"]')
+      .setValue('这款收纳盒零售价 39 元，食品级PP材质且支持可叠加防尘，桌面理物一步到位。')
+    await wrapper.find('[data-testid="hq-quick-check-all"]').setValue(true)
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+
+    // 核查总部课程详情中的 rubric 100% 属于 39 元收纳盒
+    const courses = await hqApi.listHqCourses()
+    const storageCourse = courses.items.find((c) => c.sku_code === 'MINISO-STORAGE-39')
+    expect(storageCourse).toBeTruthy()
+    const detail = await hqApi.getHqCourseDetail(storageCourse!.course_id)
+    const rubric = detail.versions[0].rubric!
+
+    const serializedRubric = JSON.stringify(rubric)
+    for (const forbidden of ['79', '保温杯', '316', '6 小时', '杯套', 'Chiikawa', '59', '盲盒']) {
+      expect(serializedRubric).not.toContain(forbidden)
+    }
+    expect(rubric.demo_pitch).toContain('桌面抽屉收纳盒')
+    expect(rubric.demo_pitch).toContain('39')
+    expect(rubric.demo_pitch).toContain('抽屉分隔板')
+    expect(rubric.scenario.happy_reply).toContain('桌面抽屉收纳盒')
+
+    // 切换员工林小美调用 preview，确认拿到的 demo_pitch 为本品且打分可直接通关
+    await mockDevLogin('usr_linxiaomei')
+    const staffList = await staffApi.listStaffAssignments()
+    const storageAsg = staffList.items.find((a) => a.course.name === '桌面抽屉收纳盒')
+    expect(storageAsg).toBeTruthy()
+
+    const preview = await staffApi.previewRoleplay(storageAsg!.assignment_id, {
+      answer_text: rubric.demo_pitch,
+      question_variant: 'default',
+    })
+    expect(preview.demo_pitch).toBe(rubric.demo_pitch)
+    expect(preview.passed).toBe(true)
+    expect(preview.total).toBeGreaterThanOrEqual(85)
+    expect(preview.missed_required_facts).toHaveLength(0)
+
+    wrapper.unmount()
+  })
+
+  it('P2 回归：快捷发布服务端已写入但响应丢失时，再次点击可沿用原幂等键恢复原批次且不重复建课与任务', async () => {
+    await mockDevLogin('usr_linmin')
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/hq')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+
+    const createSpy = vi.spyOn(hqApi, 'createHqCourse')
+    const capturedKeys: string[] = []
+    let firstPublishReleaseId = ''
+    let droppedOnce = false
+
+    const publishSpy = vi
+      .spyOn(hqApi, 'publishHqCourseVersion')
+      .mockImplementation(async (versionId, body, idempotencyKey) => {
+        capturedKeys.push(idempotencyKey)
+        const realResult = await mockPublishHqCourseVersion(versionId, body, idempotencyKey)
+        if (!droppedOnce) {
+          droppedOnce = true
+          firstPublishReleaseId = realResult.data.release.id
+          // 模拟服务端已成功写入发布批次与应训任务，但响应在网络传输中丢失
+          throw new ApiClientError(0, 'NETWORK_ERROR', '模拟网络中断：发布响应丢失')
+        }
+        return realResult
+      })
+
+    await wrapper.find('[data-testid="hq-quick-name"]').setValue('便携折叠收纳箱')
+    await wrapper.find('[data-testid="hq-quick-sku"]').setValue('MINISO-FOLD-39')
+    await wrapper.find('[data-testid="hq-quick-price"]').setValue('¥39.00')
+    await wrapper.find('[data-testid="hq-quick-check-all"]').setValue(true)
+
+    // 第 1 次点击：服务端已写入批次，但前端收到响应丢失报错
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(firstPublishReleaseId).toBeTruthy()
+    expect(wrapper.find('[data-testid="hq-quick-error"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="hq-quick-recovery-banner"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="hq-quick-publish-btn"]').text()).toContain('重试恢复原发布批次')
+
+    // 第 2 次点击：不重复建课、沿用同一 Idempotency-Key 幂等取回原批次
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(publishSpy).toHaveBeenCalledTimes(2)
+    expect(capturedKeys[0]).toBe(capturedKeys[1])
+    expect(wrapper.find('[data-testid="hq-quick-recovery-banner"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="hq-quick-error"]').exists()).toBe(false)
+    expect(wrapper.find(`[data-testid="hq-recent-release-${firstPublishReleaseId}"]`).exists()).toBe(
+      true,
+    )
+
+    // 验证该课程只生成 1 个发布批次，员工林小美也仅收到 1 条应训任务
+    const courses = await hqApi.listHqCourses()
+    const createdCourse = courses.items.find((c) => c.sku_code === 'MINISO-FOLD-39')
+    expect(createdCourse?.published_release_count).toBe(1)
+
+    await mockDevLogin('usr_linxiaomei')
+    const staffList = await staffApi.listStaffAssignments()
+    const matched = staffList.items.filter((a) => a.course.name === '便携折叠收纳箱')
+    expect(matched).toHaveLength(1)
+    expect(matched[0].release_id).toBe(firstPublishReleaseId)
 
     wrapper.unmount()
   })

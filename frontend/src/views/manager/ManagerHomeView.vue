@@ -36,6 +36,10 @@ const loadingDetail = shallowRef(false)
 const loadError = shallowRef<FormattedApiError | null>(null)
 const detailError = shallowRef<FormattedApiError | null>(null)
 
+/** 单调递增请求序号，防止慢速旧批次响应晚到覆盖当前已选批次的名单与统计 */
+let boardRequestSeq = 0
+let releasesRequestSeq = 0
+
 const storeNamesLabel = computed(() => {
   const stores = user.value?.stores ?? []
   return stores.length > 0 ? stores.map((s) => s.name).join(' / ') : '未分配门店'
@@ -90,39 +94,57 @@ const filterOptions: Array<{ key: FilterKey; label: string }> = [
 ]
 
 async function loadReleaseBoard(releaseId: string): Promise<void> {
+  const reqSeq = ++boardRequestSeq
   if (!releaseId) {
     assignees.value = []
     stats.value = null
+    detailError.value = null
+    loadingDetail.value = false
     return
   }
-  loadingDetail.value = true
+  // 切换批次时立即清空旧批次名单与统计，避免慢响应期间残留上一批次入口
+  assignees.value = []
+  stats.value = null
   detailError.value = null
+  loadingDetail.value = true
   try {
     const [assigneesRes, statsRes] = await Promise.all([
       managerApi.listManagerReleaseAssignees(releaseId),
       managerApi.getManagerReleaseStats(releaseId),
     ])
+    if (reqSeq !== boardRequestSeq || selectedReleaseId.value !== releaseId) {
+      return
+    }
     assignees.value = assigneesRes.items
     stats.value = statsRes
   } catch (err) {
+    if (reqSeq !== boardRequestSeq || selectedReleaseId.value !== releaseId) {
+      return
+    }
     detailError.value = formatApiError(err, '加载本店批次进度与统计失败')
     assignees.value = []
     stats.value = null
   } finally {
-    loadingDetail.value = false
+    if (reqSeq === boardRequestSeq) {
+      loadingDetail.value = false
+    }
   }
 }
 
 async function loadReleases(): Promise<void> {
+  const reqSeq = ++releasesRequestSeq
   loadingReleases.value = true
   loadError.value = null
   try {
     const res = await managerApi.listManagerReleases()
+    if (reqSeq !== releasesRequestSeq) return
     releases.value = res.items
     if (res.items.length === 0) {
       selectedReleaseId.value = ''
+      boardRequestSeq += 1
       assignees.value = []
       stats.value = null
+      loadingDetail.value = false
       return
     }
     const nextId = res.items.some((r) => r.release_id === selectedReleaseId.value)
@@ -131,9 +153,12 @@ async function loadReleases(): Promise<void> {
     selectedReleaseId.value = nextId
     await loadReleaseBoard(nextId)
   } catch (err) {
+    if (reqSeq !== releasesRequestSeq) return
     loadError.value = formatApiError(err, '加载本店发布批次失败')
   } finally {
-    loadingReleases.value = false
+    if (reqSeq === releasesRequestSeq) {
+      loadingReleases.value = false
+    }
   }
 }
 

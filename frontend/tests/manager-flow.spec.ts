@@ -1,10 +1,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory } from 'vue-router'
 import App from '@/App.vue'
+import * as hqApi from '@/api/hq'
 import * as managerApi from '@/api/manager'
 import * as staffApi from '@/api/staff'
 import { useSession } from '@/composables/useSession'
+import { mockListManagerReleaseAssignees } from '@/mock/manager'
 import { M1_SAMPLE_INPUTS } from '@/mock/seed'
 import { mockDevLogin, resetMockState } from '@/mock/server'
 import { createAppRouter } from '@/router'
@@ -25,8 +27,13 @@ async function waitForSelector(wrapper: ReturnType<typeof mount>, selector: stri
 describe('店长 H5 端进度统计、补训指派与复查确认集成测试', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    window.sessionStorage.clear()
     resetMockState()
     useSession().resetLocalSessionState()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   it('店长查看 48h 统计与卡点 -> 给漏讲员工指派补训 -> 员工复练通关 -> 店长核验证据并确认复查通过', async () => {
@@ -151,6 +158,78 @@ describe('店长 H5 端进度统计、补训指派与复查确认集成测试', 
 
     // 避免未使用变量告警
     expect(submitted.attempt.attempt_id).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  it('P2 回归：店长快速切换批次时，延迟到达的旧批次响应不会覆盖当前选中批次名单与详情入口', async () => {
+    // 准备：总部审校并发布第 2 个批次（名创便携保温杯 -> store_bj），使店长拥有两个批次
+    await mockDevLogin('usr_linmin')
+    await hqApi.reviewHqCourseVersion('crv_thermos_v1', {
+      checklist: { price_verified: true, spec_verified: true, redline_verified: true },
+    })
+    const thermosPub = await hqApi.publishHqCourseVersion(
+      'crv_thermos_v1',
+      { store_ids: ['store_bj'], deadline_hours: 48, expected_revision: 1 },
+      createClientUuid(),
+    )
+    const thermosReleaseId = thermosPub.data.release.id
+    const chiikawaReleaseId = 'rls_m1_bj'
+
+    // 店长李明登录进入 /manager，初始自动加载最新批次（thermosReleaseId）
+    useSession().resetLocalSessionState()
+    await mockDevLogin('usr_liming')
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/manager')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    await waitForSelector(wrapper, `[data-testid="mgr-release-chip-${chiikawaReleaseId}"]`)
+
+    // 拦截切换请求：人为延迟 chiikawaReleaseId（旧点击）的响应，让 thermosReleaseId（新点击）先返回
+    let resolveDelayedChiikawa!: () => void
+    const delayedChiikawaGate = new Promise<void>((resolve) => {
+      resolveDelayedChiikawa = resolve
+    })
+
+    vi.spyOn(managerApi, 'listManagerReleaseAssignees').mockImplementation(async (releaseId) => {
+      const data = await mockListManagerReleaseAssignees(releaseId)
+      if (releaseId === chiikawaReleaseId) {
+        await delayedChiikawaGate
+      }
+      return data
+    })
+
+    // 1. 先点 Chiikawa 批次（请求被挂起延迟），紧接着立刻切回保温杯批次（立即返回）
+    await wrapper.find(`[data-testid="mgr-release-chip-${chiikawaReleaseId}"]`).trigger('click')
+    await wrapper.find(`[data-testid="mgr-release-chip-${thermosReleaseId}"]`).trigger('click')
+    await waitForSelector(
+      wrapper,
+      `[data-testid="mgr-assignee-asg_${thermosReleaseId}_usr_linxiaomei"]`,
+    )
+
+    // 2. 此时释放延迟的 Chiikawa 旧响应，断言当前页面仍显示保温杯批次名单，不被旧响应覆盖
+    resolveDelayedChiikawa()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await flushPromises()
+
+    expect(
+      wrapper.find(`[data-testid="mgr-release-chip-${thermosReleaseId}"]`).classes(),
+    ).toContain('active')
+    expect(
+      wrapper.find(`[data-testid="mgr-assignee-asg_${thermosReleaseId}_usr_linxiaomei"]`).exists(),
+    ).toBe(true)
+    expect(wrapper.find('[data-testid="mgr-assignee-asg_m1_bj_linxiaomei"]').exists()).toBe(false)
+
+    // 3. 点击林小美进入详情页，确认进入的是保温杯批次任务而非 Chiikawa
+    await wrapper
+      .find(`[data-testid="mgr-assignee-asg_${thermosReleaseId}_usr_linxiaomei"]`)
+      .trigger('click')
+    await waitForSelector(wrapper, '[data-testid="mgr-assignment-detail-page"]')
+    expect(router.currentRoute.value.params.assignmentId).toBe(
+      `asg_${thermosReleaseId}_usr_linxiaomei`,
+    )
+
     wrapper.unmount()
   })
 })

@@ -63,8 +63,11 @@ const fallbackSummary = computed(() => {
   }
 })
 
+let releaseRequestSeq = 0
+
 async function loadRelease(id: string): Promise<void> {
   if (!id) return
+  const reqSeq = ++releaseRequestSeq
   loading.value = true
   loadError.value = null
   statsUnavailableHint.value = ''
@@ -77,6 +80,7 @@ async function loadRelease(id: string): Promise<void> {
       hqApi.getHqReleaseDetail(id),
       hqApi.listHqReleaseAssignees(id),
     ])
+    if (reqSeq !== releaseRequestSeq || releaseId.value !== id) return
     releaseDetail.value = detailRes.release
     assignees.value = assigneesRes.items
 
@@ -90,8 +94,11 @@ async function loadRelease(id: string): Promise<void> {
 
     // T005 统计接口在联调前可能尚未部署；404 时降级展示 release 概要不阻断页面
     try {
-      stats.value = await hqApi.getHqReleaseStats(id)
+      const statsRes = await hqApi.getHqReleaseStats(id)
+      if (reqSeq !== releaseRequestSeq || releaseId.value !== id) return
+      stats.value = statsRes
     } catch (statsErr) {
+      if (reqSeq !== releaseRequestSeq || releaseId.value !== id) return
       if (statsErr instanceof ApiClientError && statsErr.status === 404) {
         statsUnavailableHint.value =
           '当前后端尚未挂载 48 小时分店明细统计接口（T005），已先展示发布批次实时摘要。'
@@ -101,9 +108,12 @@ async function loadRelease(id: string): Promise<void> {
       }
     }
   } catch (err) {
+    if (reqSeq !== releaseRequestSeq || releaseId.value !== id) return
     loadError.value = formatApiError(err, '加载发布批次详情失败')
   } finally {
-    loading.value = false
+    if (reqSeq === releaseRequestSeq) {
+      loading.value = false
+    }
   }
 }
 

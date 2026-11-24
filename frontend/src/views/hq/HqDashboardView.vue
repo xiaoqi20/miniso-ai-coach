@@ -135,6 +135,7 @@ function handleLookupRelease(): void {
 async function handleResetMock(): Promise<void> {
   resetMockState()
   window.localStorage.removeItem('shouke_hq_recent_releases_mock')
+  window.sessionStorage.removeItem('shouke_hq_quick_publish_pending_mock')
   // 保持当前总部登录态方便继续操作
   const { mockDevLogin } = await import('@/mock/server')
   await mockDevLogin('usr_linmin')

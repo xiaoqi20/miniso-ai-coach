@@ -68,20 +68,29 @@ function auditActionLabel(action: string): string {
   }
 }
 
+let detailRequestSeq = 0
+
 async function loadDetail(id: string): Promise<void> {
   if (!id) return
+  const reqSeq = ++detailRequestSeq
   if (!detail.value || detail.value.assignment.assignment_id !== id) {
+    detail.value = null
     loading.value = true
   }
   loadError.value = null
   actionError.value = null
   try {
-    detail.value = await managerApi.getManagerAssignmentDetail(id)
+    const res = await managerApi.getManagerAssignmentDetail(id)
+    if (reqSeq !== detailRequestSeq || assignmentId.value !== id) return
+    detail.value = res
   } catch (err) {
+    if (reqSeq !== detailRequestSeq || assignmentId.value !== id) return
     detail.value = null
     loadError.value = formatApiError(err, '加载店员训练详情失败')
   } finally {
-    loading.value = false
+    if (reqSeq === detailRequestSeq) {
+      loading.value = false
+    }
   }
 }
 
