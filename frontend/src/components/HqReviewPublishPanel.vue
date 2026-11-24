@@ -504,18 +504,19 @@ function handlePrepareNewPublish(): void {
 
 .preset-chip {
   height: 34px;
-  padding: 0 12px;
+  padding: 0 13px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--bg);
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
 
 .preset-chip.active {
-  background: var(--red);
-  color: #ffffff;
+  background: var(--red-soft);
+  color: var(--red);
   border-color: var(--red);
 }
 

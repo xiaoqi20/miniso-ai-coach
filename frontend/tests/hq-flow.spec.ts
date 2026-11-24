@@ -130,4 +130,38 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
 
     wrapper.unmount()
   })
+
+  it('总部首页原型表单可直接录入新品并一键审校发布至指定门店', async () => {
+    await mockDevLogin('usr_linmin')
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/hq')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="hq-quick-publish-card"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="hq-pilot-overview-card"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="hq-quick-name"]').setValue('三丽鸥联名香薰礼盒')
+    await wrapper.find('[data-testid="hq-quick-price"]').setValue('¥69.00')
+    await wrapper.find('[data-testid="hq-quick-desc"]').setValue('正版联名香薰 69 元，摆放在主推中岛。')
+    await wrapper.find('[data-testid="hq-quick-store-store_fs"]').trigger('click')
+    await wrapper.find('[data-testid="hq-quick-deadline-72"]').trigger('click')
+
+    // 未勾选审校确认点击发布，提示清单未确认
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-quick-error"]').text()).toContain('审校清单尚未全部确认')
+
+    // 勾选人工审校确认并一键发布
+    await wrapper.find('[data-testid="hq-quick-check-all"]').setValue(true)
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('三丽鸥联名香薰礼盒')
+    expect(wrapper.text()).toContain('应训 5 人')
+
+    wrapper.unmount()
+  })
 })

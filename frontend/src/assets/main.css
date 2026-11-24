@@ -91,7 +91,7 @@ textarea:focus-visible {
   position: relative;
 }
 
-/* ==================== 桌面端外壳（总部 PC 预留布局） ==================== */
+/* ==================== 桌面端外壳（总部 PC 端，延续名创红原型视觉） ==================== */
 .desktop-shell {
   min-height: 100vh;
   width: 100%;
@@ -101,22 +101,17 @@ textarea:focus-visible {
 }
 
 .desktop-topbar {
-  height: 58px;
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
-  padding: 0 28px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  background: linear-gradient(135deg, #ed1c24 0%, #cc121a 100%);
+  color: #ffffff;
+  box-shadow: 0 6px 20px rgba(237, 28, 36, 0.16);
 }
 
 .desktop-main {
   flex: 1;
   width: 100%;
-  max-width: 1120px;
+  max-width: 1160px;
   margin: 0 auto;
-  padding: 24px;
+  padding: 20px 24px 36px;
 }
 
 /* ==================== 公共基础组件与按钮 ==================== */
