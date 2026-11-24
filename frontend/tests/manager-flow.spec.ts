@@ -220,8 +220,38 @@ describe('店长 H5 端进度统计、补训指派与复查确认集成测试', 
       wrapper.find(`[data-testid="mgr-assignee-asg_${thermosReleaseId}_usr_linxiaomei"]`).exists(),
     ).toBe(true)
     expect(wrapper.find('[data-testid="mgr-assignee-asg_m1_bj_linxiaomei"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="mgr-detail-error"]').exists()).toBe(false)
 
-    // 3. 点击林小美进入详情页，确认进入的是保温杯批次任务而非 Chiikawa
+    // 3. 再验证迟到的旧批次请求最终失败（reject）时，也不污染当前批次的名单、统计与错误提示
+    let rejectDelayedChiikawa!: (reason?: unknown) => void
+    const failingChiikawaGate = new Promise<void>((_, reject) => {
+      rejectDelayedChiikawa = reject
+    })
+    vi.spyOn(managerApi, 'listManagerReleaseAssignees').mockImplementation(async (releaseId) => {
+      if (releaseId === chiikawaReleaseId) {
+        await failingChiikawaGate
+      }
+      return mockListManagerReleaseAssignees(releaseId)
+    })
+
+    await wrapper.find(`[data-testid="mgr-release-chip-${chiikawaReleaseId}"]`).trigger('click')
+    await wrapper.find(`[data-testid="mgr-release-chip-${thermosReleaseId}"]`).trigger('click')
+    await waitForSelector(
+      wrapper,
+      `[data-testid="mgr-assignee-asg_${thermosReleaseId}_usr_linxiaomei"]`,
+    )
+
+    rejectDelayedChiikawa(new Error('模拟旧批次网络失败'))
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="mgr-detail-error"]').exists()).toBe(false)
+    expect(
+      wrapper.find(`[data-testid="mgr-assignee-asg_${thermosReleaseId}_usr_linxiaomei"]`).exists(),
+    ).toBe(true)
+
+    // 4. 点击林小美进入详情页，确认进入的是保温杯批次任务而非 Chiikawa
     await wrapper
       .find(`[data-testid="mgr-assignee-asg_${thermosReleaseId}_usr_linxiaomei"]`)
       .trigger('click')

@@ -153,6 +153,7 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
 
     await wrapper.find('[data-testid="hq-quick-name"]').setValue('三丽鸥联名香薰礼盒')
     await wrapper.find('[data-testid="hq-quick-price"]').setValue('¥69.00')
+    await wrapper.find('[data-testid="hq-quick-facts"]').setValue('零售价 69 元, 天然植物精油')
     await wrapper.find('[data-testid="hq-quick-desc"]').setValue('正版联名香薰 69 元，摆放在主推中岛。')
     await wrapper.find('[data-testid="hq-quick-store-store_fs"]').trigger('click')
     await wrapper.find('[data-testid="hq-quick-deadline-72"]').trigger('click')
@@ -173,7 +174,7 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
     wrapper.unmount()
   })
 
-  it('P1 回归：快捷发布 39 元收纳盒生成独立本品规则与示范话术，绝不串用保温杯或 Chiikawa 文案', async () => {
+  it('P1 回归：缺少经审校内容时拒绝直发仅可存草稿；连续快捷发布两个不同事实商品互不串用话术、规则与问答', async () => {
     await mockDevLogin('usr_linmin')
     const router = createAppRouter(createMemoryHistory())
     await router.push('/hq')
@@ -182,53 +183,99 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
     const wrapper = mount(App, { global: { plugins: [router] } })
     await flushPromises()
 
-    await wrapper.find('[data-testid="hq-quick-name"]').setValue('桌面抽屉收纳盒')
+    // 0. 仅填名称缺少价格/事实/卖点时，拒绝一键发布，允许存为待审校草稿
+    await wrapper.find('[data-testid="hq-quick-name"]').setValue('待完善新品草稿')
+    await wrapper.find('[data-testid="hq-quick-check-all"]').setValue(true)
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-quick-error"]').text()).toContain('缺少经审校的完整课程内容')
+
+    await wrapper.find('[data-testid="hq-quick-save-draft-btn"]').trigger('click')
+    await flushPromises()
+    const draftCourses = await hqApi.listHqCourses()
+    const savedDraft = draftCourses.items.find((c) => c.name === '待完善新品草稿')
+    expect(savedDraft?.latest_version?.status).toBe('draft')
+    expect(savedDraft?.published_release_count).toBe(0)
+
+    // 1. 发布商品 A：39 元桌面三格收纳盒
+    await wrapper.find('[data-testid="hq-quick-name"]').setValue('桌面三格收纳盒')
     await wrapper.find('[data-testid="hq-quick-sku"]').setValue('MINISO-STORAGE-39')
     await wrapper.find('[data-testid="hq-quick-price"]').setValue('¥39.00')
-    await wrapper.find('[data-testid="hq-quick-cross"]').setValue('抽屉分隔板')
-    await wrapper.find('[data-testid="hq-quick-facts"]').setValue('食品级PP材质, 可叠加防尘')
+    await wrapper.find('[data-testid="hq-quick-cross"]').setValue('8元标签贴')
+    await wrapper.find('[data-testid="hq-quick-facts"]').setValue('透明亚克力材质, 三格分区防尘')
     await wrapper
       .find('[data-testid="hq-quick-desc"]')
-      .setValue('这款收纳盒零售价 39 元，食品级PP材质且支持可叠加防尘，桌面理物一步到位。')
+      .setValue('这款桌面三格收纳盒零售价 39 元，透明亚克力材质且支持三格分区防尘，桌面理物一步到位。')
     await wrapper.find('[data-testid="hq-quick-check-all"]').setValue(true)
     await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
     await flushPromises()
 
-    // 核查总部课程详情中的 rubric 100% 属于 39 元收纳盒
+    // 2. 再发布商品 B：129 元便携挂烫机（与收纳盒、保温杯、Chiikawa 均不同）
+    await wrapper.find('[data-testid="hq-quick-name"]').setValue('迷你折叠挂烫机')
+    await wrapper.find('[data-testid="hq-quick-sku"]').setValue('MINISO-STEAMER-129')
+    await wrapper.find('[data-testid="hq-quick-price"]').setValue('¥129.00')
+    await wrapper.find('[data-testid="hq-quick-cross"]').setValue('防烫手套')
+    await wrapper.find('[data-testid="hq-quick-facts"]').setValue('30秒快速出汽, 干湿双烫')
+    await wrapper
+      .find('[data-testid="hq-quick-desc"]')
+      .setValue('这款迷你折叠挂烫机零售价 129 元，30秒快速出汽支持干湿双烫，出差旅行轻松除皱。')
+    await wrapper.find('[data-testid="hq-quick-check-all"]').setValue(true)
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+
+    // 核查两个商品的课件、评分规则、示范与顾客问答完全独立且互不串用
     const courses = await hqApi.listHqCourses()
-    const storageCourse = courses.items.find((c) => c.sku_code === 'MINISO-STORAGE-39')
-    expect(storageCourse).toBeTruthy()
-    const detail = await hqApi.getHqCourseDetail(storageCourse!.course_id)
-    const rubric = detail.versions[0].rubric!
+    const storageCourse = courses.items.find((c) => c.sku_code === 'MINISO-STORAGE-39')!
+    const steamerCourse = courses.items.find((c) => c.sku_code === 'MINISO-STEAMER-129')!
+    const storageDetail = await hqApi.getHqCourseDetail(storageCourse.course_id)
+    const steamerDetail = await hqApi.getHqCourseDetail(steamerCourse.course_id)
 
-    const serializedRubric = JSON.stringify(rubric)
-    for (const forbidden of ['79', '保温杯', '316', '6 小时', '杯套', 'Chiikawa', '59', '盲盒']) {
-      expect(serializedRubric).not.toContain(forbidden)
+    const storageRubric = storageDetail.versions[0].rubric!
+    const steamerRubric = steamerDetail.versions[0].rubric!
+
+    const storageJson = JSON.stringify({ content: storageDetail.versions[0].content, rubric: storageRubric })
+    for (const forbidden of ['79', '保温杯', '316', '6 小时', '杯套', 'Chiikawa', '59', '挂烫机', '129', '防烫手套']) {
+      expect(storageJson).not.toContain(forbidden)
     }
-    expect(rubric.demo_pitch).toContain('桌面抽屉收纳盒')
-    expect(rubric.demo_pitch).toContain('39')
-    expect(rubric.demo_pitch).toContain('抽屉分隔板')
-    expect(rubric.scenario.happy_reply).toContain('桌面抽屉收纳盒')
+    expect(storageRubric.demo_pitch).toContain('桌面三格收纳盒')
+    expect(storageRubric.demo_pitch).toContain('39')
+    expect(storageRubric.demo_pitch).toContain('8元标签贴')
+    expect(storageRubric.scenario.happy_reply).toContain('桌面三格收纳盒')
 
-    // 切换员工林小美调用 preview，确认拿到的 demo_pitch 为本品且打分可直接通关
+    const steamerJson = JSON.stringify({ content: steamerDetail.versions[0].content, rubric: steamerRubric })
+    for (const forbidden of ['79', '保温杯', '316', '杯套', 'Chiikawa', '59', '收纳盒', '39', '标签贴']) {
+      expect(steamerJson).not.toContain(forbidden)
+    }
+    expect(steamerRubric.demo_pitch).toContain('迷你折叠挂烫机')
+    expect(steamerRubric.demo_pitch).toContain('129')
+    expect(steamerRubric.demo_pitch).toContain('防烫手套')
+
+    // 切换员工林小美分别预览两门课，示范话术均为各自本品且各自直接通关
     await mockDevLogin('usr_linxiaomei')
     const staffList = await staffApi.listStaffAssignments()
-    const storageAsg = staffList.items.find((a) => a.course.name === '桌面抽屉收纳盒')
-    expect(storageAsg).toBeTruthy()
+    const storageAsg = staffList.items.find((a) => a.course.name === '桌面三格收纳盒')!
+    const steamerAsg = staffList.items.find((a) => a.course.name === '迷你折叠挂烫机')!
 
-    const preview = await staffApi.previewRoleplay(storageAsg!.assignment_id, {
-      answer_text: rubric.demo_pitch,
+    const storagePreview = await staffApi.previewRoleplay(storageAsg.assignment_id, {
+      answer_text: storageRubric.demo_pitch,
       question_variant: 'default',
     })
-    expect(preview.demo_pitch).toBe(rubric.demo_pitch)
-    expect(preview.passed).toBe(true)
-    expect(preview.total).toBeGreaterThanOrEqual(85)
-    expect(preview.missed_required_facts).toHaveLength(0)
+    expect(storagePreview.demo_pitch).toBe(storageRubric.demo_pitch)
+    expect(storagePreview.passed).toBe(true)
+    expect(storagePreview.missed_required_facts).toHaveLength(0)
+
+    const steamerPreview = await staffApi.previewRoleplay(steamerAsg.assignment_id, {
+      answer_text: steamerRubric.demo_pitch,
+      question_variant: 'default',
+    })
+    expect(steamerPreview.demo_pitch).toBe(steamerRubric.demo_pitch)
+    expect(steamerPreview.passed).toBe(true)
+    expect(steamerPreview.missed_required_facts).toHaveLength(0)
 
     wrapper.unmount()
   })
 
-  it('P2 回归：快捷发布服务端已写入但响应丢失时，再次点击可沿用原幂等键恢复原批次且不重复建课与任务', async () => {
+  it('P2 回归：覆盖发布前失败与写入后丢失响应，重试沿用原版本与同一幂等键恢复原批次且应训名单唯一', async () => {
     await mockDevLogin('usr_linmin')
     const router = createAppRouter(createMemoryHistory())
     await router.push('/hq')
@@ -239,18 +286,24 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
 
     const createSpy = vi.spyOn(hqApi, 'createHqCourse')
     const capturedKeys: string[] = []
+    const capturedVersions: string[] = []
     let firstPublishReleaseId = ''
-    let droppedOnce = false
+    let publishAttempt = 0
 
     const publishSpy = vi
       .spyOn(hqApi, 'publishHqCourseVersion')
       .mockImplementation(async (versionId, body, idempotencyKey) => {
+        publishAttempt += 1
         capturedKeys.push(idempotencyKey)
+        capturedVersions.push(versionId)
+        if (publishAttempt === 1) {
+          // 场景 1：发布写入前即失败（未落库）
+          throw new ApiClientError(503, 'INTERNAL_ERROR', '模拟发布前网关短暂不可用')
+        }
         const realResult = await mockPublishHqCourseVersion(versionId, body, idempotencyKey)
-        if (!droppedOnce) {
-          droppedOnce = true
+        if (publishAttempt === 2) {
+          // 场景 2：服务端已写入发布批次与应训任务，但响应在传输中丢失
           firstPublishReleaseId = realResult.data.release.id
-          // 模拟服务端已成功写入发布批次与应训任务，但响应在网络传输中丢失
           throw new ApiClientError(0, 'NETWORK_ERROR', '模拟网络中断：发布响应丢失')
         }
         return realResult
@@ -259,24 +312,31 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
     await wrapper.find('[data-testid="hq-quick-name"]').setValue('便携折叠收纳箱')
     await wrapper.find('[data-testid="hq-quick-sku"]').setValue('MINISO-FOLD-39')
     await wrapper.find('[data-testid="hq-quick-price"]').setValue('¥39.00')
+    await wrapper.find('[data-testid="hq-quick-facts"]').setValue('零售价 39 元, 折叠省空间')
+    await wrapper.find('[data-testid="hq-quick-desc"]').setValue('39 元便携折叠收纳箱，可折叠收纳不占空间。')
     await wrapper.find('[data-testid="hq-quick-check-all"]').setValue(true)
 
-    // 第 1 次点击：服务端已写入批次，但前端收到响应丢失报错
+    // 第 1 次点击：建课与审校成功，但发布前网关失败
     await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
     await flushPromises()
-
-    expect(firstPublishReleaseId).toBeTruthy()
+    expect(wrapper.find('[data-testid="hq-quick-recovery-banner"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="hq-quick-error"]').exists()).toBe(true)
+
+    // 第 2 次点击：不重复建课，沿用同一版本与幂等键写入成功但响应丢失
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+    expect(firstPublishReleaseId).toBeTruthy()
     expect(wrapper.find('[data-testid="hq-quick-recovery-banner"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="hq-quick-publish-btn"]').text()).toContain('重试恢复原发布批次')
 
-    // 第 2 次点击：不重复建课、沿用同一 Idempotency-Key 幂等取回原批次
+    // 第 3 次点击：不重复建课、以同一幂等键命中幂等重放取回原批次
     await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
     await flushPromises()
 
     expect(createSpy).toHaveBeenCalledTimes(1)
-    expect(publishSpy).toHaveBeenCalledTimes(2)
-    expect(capturedKeys[0]).toBe(capturedKeys[1])
+    expect(publishSpy).toHaveBeenCalledTimes(3)
+    expect(new Set(capturedVersions).size).toBe(1)
+    expect(new Set(capturedKeys).size).toBe(1)
     expect(wrapper.find('[data-testid="hq-quick-recovery-banner"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="hq-quick-error"]').exists()).toBe(false)
     expect(wrapper.find(`[data-testid="hq-recent-release-${firstPublishReleaseId}"]`).exists()).toBe(

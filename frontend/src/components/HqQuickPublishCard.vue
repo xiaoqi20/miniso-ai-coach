@@ -156,15 +156,31 @@ async function submitCourse(publishNow: boolean): Promise<void> {
       }
       return
     }
-    if (publishNow && !allChecklistConfirmed.value) {
-      submitError.value = {
-        title: '审校清单尚未全部确认',
-        detail: '请先勾选人工审校确认（零售价、规格购买规则、禁用红线）后再提交发布。',
-        code: 'REVIEW_CHECKLIST_INCOMPLETE',
-        requestId: '',
-        shouldRefresh: false,
+    if (publishNow) {
+      const missingFields: string[] = []
+      if (!form.price.trim()) missingFields.push('零售价')
+      if (!form.facts.trim()) missingFields.push('必考核对事实点')
+      if (!form.desc.trim()) missingFields.push('标准卖点与话术规范')
+      if (missingFields.length > 0) {
+        submitError.value = {
+          title: '缺少经审校的完整课程内容，无法直接发布',
+          detail: `请先补全「${missingFields.join('、')}」，或点击「存为待审校草稿」停留在草稿态继续完善。`,
+          code: 'VALIDATION_ERROR',
+          requestId: '',
+          shouldRefresh: false,
+        }
+        return
       }
-      return
+      if (!allChecklistConfirmed.value) {
+        submitError.value = {
+          title: '审校清单尚未全部确认',
+          detail: '请先勾选人工审校确认（零售价、规格购买规则、禁用红线）后再提交发布。',
+          code: 'REVIEW_CHECKLIST_INCOMPLETE',
+          requestId: '',
+          shouldRefresh: false,
+        }
+        return
+      }
     }
   }
 
