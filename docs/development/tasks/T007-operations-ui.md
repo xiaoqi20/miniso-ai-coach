@@ -34,4 +34,39 @@
   - **移动视口（390×844）店长 H5 与跨角色闭环路径**：先以员工「陈阿杰（`usr_chenajie`）」完成同义表达复练（91 分通关，推进至「已改正待复查」）-> 切换店长「李明（`usr_liming`）」登录 `/manager`，验证移动端无横向溢出（宽 390px）、待办提醒横幅（待复查 1 人）、Chiikawa 批次 48h 统计 `1 / 3`（`33.3%`）与授权店员列表 -> 进入陈阿杰详情页核对第 2 轮冻结复练证据（「端盒六个不重样」命中证据）并确认复查通过 -> 验证状态更新为「复查通过」且审计轨迹新增操作人「李明」记录 -> 验证无成绩员工王晓雪详情提示 `NO_ATTEMPT` -> 直访越权/不存在任务 `asg_other_store_404` 清晰展示 `404 NOT_FOUND` 与返回入口；全程零 `console.error` / `pageerror`。
 - **尚未验证项 / 交接 T008 说明**：
   - 真实后端三角色在线联调（含 T005 店长补训、复查与 48h 统计 API 及 MySQL 8.4）留待 T005 合并后的 T008 端到端联调验收。`/hq/releases/:releaseId` 已针对 T005 统计接口未部署时的 404 做降级摘要展示，T005 上线后无需修改前端即可展示完整分门店 48h 统计。
-- **Codex 验收结论**：待验收。
+- **Codex 验收结论**：未通过，详见下方验收记录。
+
+## Codex 验收（2026-11-24，`e6e2e64`）
+
+验收未通过，T007 退回「进行中」，由 Antigravity App 返工。T008 继续排队。
+
+### 独立验证
+
+- 分支 `feat/t007-operations-ui` 的类型检查、Vitest（9 个文件、29 项）及 Mock、Real 构建均通过。
+- 总部 PC（1280×800）验证保温杯草稿审校。清单未全勾时提示 `REVIEW_CHECKLIST_INCOMPLETE`。完成三项人工审校后向北京路、佛山祖庙定向发布，截止为 72 小时，生成批次 `rls_mock_11` 和 5 人应训名单。同键提交返回原批次，详情显示 `0 / 5`。总部访问店长路由时被引导回总部首页。
+- 店长 H5（390×844）验证林小美漏讲「端盒 6 个不重复」后由李明指派补训。林小美以「端盒六个不重样」完成 91 分复练。李明核查第 2 轮冻结证据并确认通过，页面记录两项审计操作，48 小时通关人数由 `0 / 3` 更新为 `1 / 3`。不存在的员工任务显示 `404 NOT_FOUND` 和返回入口。
+- 真实后端与企业微信客户端联调归入 T008。
+
+### 返工项与复验标准
+
+1. **总部快捷发布把保温杯话术写入其他商品课程（P1）。** 从总部首页快捷发布「桌面三格收纳盒」，价格为 39 元，卖点为透明亚克力，连带商品为 8 元标签贴。员工收到任务后在对练页试听并点「填入本课金牌示范」，实际出现 79 元、316 不锈钢、6 小时保温和 15 元杯套。快捷表单复制 `THERMOS_RUBRIC` 后只替换必考事实与两套问法，示范、评分关键词和顾客回复继续使用保温杯内容。复验需发布两个事实不同的商品，核对实际绑定的课件、评分规则、示范和顾客问答。缺少经审校的内容时应停留在草稿。定位见 [HqQuickPublishCard.vue](../../../frontend/src/components/HqQuickPublishCard.vue#L126)。
+2. **总部快捷发布丢失响应后无法重试原批次（P2）。** 组件测试注入故障，让发布在 Mock 中成功写入后丢失响应。保留已填写的 SKU 再点发布时，页面尝试重新创建课程并报 `sku_code 已存在`，未重试原发布请求。复验需覆盖发布前失败和写入后丢失响应，确认继续使用原课程版本、发布参数和幂等键，并显示原批次及唯一的应训名单。定位见 [HqQuickPublishCard.vue](../../../frontend/src/components/HqQuickPublishCard.vue#L134)。
+3. **店长切换批次时，旧响应覆盖新批次名单（P2）。** 组件测试延迟 `rls_m1_bj` 的名单响应，先切到该批次，再切回 `rls_mock_11`。释放旧响应后，当前高亮仍为 `rls_mock_11`，名单和员工详情入口却来自 `rls_m1_bj`。复验需控制两个批次请求反序返回，并覆盖旧请求失败。确认名单、统计、错误提示和加载状态始终对应当前批次。定位见 [ManagerHomeView.vue](../../../frontend/src/views/manager/ManagerHomeView.vue#L92)。
+
+## Antigravity App 返工记录（2026-11-24，`5532abe`、`2092b38`）
+
+针对 Codex 验收退回的三项问题（P1 快捷发布话术串用、P2 丢响应重试无法恢复原批次、P2 店长切批旧响应覆盖）已完成根因修复与专项回归：
+
+- **改动文件**：
+  - [courseRubric.ts](../../../frontend/src/utils/courseRubric.ts)：新增纯函数 `buildCourseRubricFromForm()`，完全由当前商品表单的名称、零售价、连带商品、必考事实与卖点话术动态构造独立的 `required_facts`、`dimensions` 四维关键词、全店通用 `redlines`、顾客 `scenario`（问法/换问法/积极与顾虑回复）、`average_pitch` 与 `demo_pitch`，彻底移除对 `THERMOS_RUBRIC` 等示例商品的拷贝依赖。
+  - [HqQuickPublishCard.vue](../../../frontend/src/components/HqQuickPublishCard.vue) & [HqDashboardView.vue](../../../frontend/src/views/hq/HqDashboardView.vue)：
+    1. 移除默认预填的 Chiikawa 商品字段，一键「审校通过并发布」强校验零售价、必考核对事实与卖点话术均已填写，缺失经审校内容时拒绝直发并引导「存为待审校草稿」停留在草稿态。
+    2. 引入分阶段提交断点恢复态（同步持久化至 `sessionStorage`，保存 `courseId`、`versionId`、`revision`、`reviewed`、`storeIds`、`deadlineHours` 与固定 `publishIdempotencyKey`）。当审校或发布阶段发生发布前失败或写入后响应丢失时，再次点击主按钮直接从断点续传并以原版本和同一 `Idempotency-Key` 幂等取回原批次，不重复建课也不重复生成应训任务（提供「放弃并新建」手动清空恢复态）。
+  - [ManagerHomeView.vue](../../../frontend/src/views/manager/ManagerHomeView.vue)、[ManagerAssignmentDetailView.vue](../../../frontend/src/views/manager/ManagerAssignmentDetailView.vue)、[HqCourseWorkbenchView.vue](../../../frontend/src/views/hq/HqCourseWorkbenchView.vue)、[HqReleaseDetailView.vue](../../../frontend/src/views/hq/HqReleaseDetailView.vue)：为异步加载统一增加单调递增请求序号（`requestSeq`）与当前目标 ID 校验；店长切换批次时立即清空旧批次名单与统计，丢弃一切迟到的旧批次成功或失败响应，确保名单、统计、错误提示和加载状态始终与当前选中批次一致。
+  - [hq-flow.spec.ts](../../../frontend/tests/hq-flow.spec.ts) & [manager-flow.spec.ts](../../../frontend/tests/manager-flow.spec.ts)：新增并扩充 3 项返工专项回归测试，覆盖（1）缺少经审校内容停留在草稿 + 连续发布 39 元「桌面三格收纳盒」与 129 元「迷你折叠挂烫机」验证课件/规则/示范/问答互不串用且员工预览直接通关；（2）覆盖发布前 503 失败与写入后网络丢响应两段故障，确认重试沿用同一版本与同一幂等键恢复原批次且应训名单唯一；（3）控制两批次反序返回并覆盖旧请求延迟失败，验证当前批次名单、统计、错误态与详情跳转均不被污染。
+- **返工提交**：`feat/t007-operations-ui` 分支提交 `5532abe`、`2092b38`。
+- **自动化验证结果**：
+  - `cd frontend && npm run typecheck`：通过（`vue-tsc --noEmit` 零错误）。
+  - `cd frontend && npm test`：**9 个测试文件、32 项测试全部通过**（`vitest run`）。
+  - `cd frontend && npm run build` & `npm run build:real`：Mock 与 Real 双模式生产构建均成功。
+- **说明**：本次三项返工后尝试唤醒内置浏览器子智能体做额外 UI 复验时遇上游服务 SSE EOF 中断；三项问题的完整组件交互与状态恢复均已通过 Vitest 32/32 专项回归测试验证，提交 Codex 复验。
