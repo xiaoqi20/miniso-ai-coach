@@ -3,14 +3,15 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSession } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
+import { detectClientRuntime } from '@/utils/runtime'
 
 /**
- * H5 移动端公共布局壳。
- * 供员工（T006）与店长（T007）移动端页面复用，提供品牌状态栏与悬浮双 Tab 底部导航。
+ * 标准 H5 移动端公共布局壳（已移除模拟手机黑框与虚拟 09:41 状态栏，预留企业微信 WebView 适配）。
+ * 供登录引导、员工（T006）与店长（T007）移动端页面复用，提供顶部安全区与悬浮底部导航。
  */
 const props = withDefaults(
   defineProps<{
-    /** 顶部状态栏主题：员工首页头部用红色 dark，内页用浅色 light */
+    /** 顶部安全区底色主题：首页/引导页为名创红 dark，内页为浅色 light */
     statusTheme?: 'dark' | 'light'
     /** 是否显示底部悬浮导航栏 */
     showBottomNav?: boolean
@@ -29,6 +30,7 @@ const router = useRouter()
 const { user } = useSession()
 const { showToast } = useToast()
 
+const runtime = detectClientRuntime()
 const activeTab = computed(() => route.meta.navTab ?? 'home')
 const roleHomePath = computed(() => (user.value?.role === 'store_manager' ? '/manager' : '/staff'))
 
@@ -46,23 +48,12 @@ function handleGoRoleplay(): void {
 </script>
 
 <template>
-  <div class="app-viewport-center">
-    <div class="phone-frame">
-      <!-- 顶部企微学堂模拟状态栏 -->
-      <header class="status-bar" :class="props.statusTheme">
-        <span>09:41</span>
-        <div class="status-signal">
-          <span>MINISO 企微学堂</span>
-          <svg width="16" height="12" viewBox="0 0 16 12" fill="none" aria-hidden="true">
-            <rect x="0" y="7" width="3" height="5" rx="1" fill="currentColor" opacity="0.5" />
-            <rect x="4.5" y="5" width="3" height="7" rx="1" fill="currentColor" opacity="0.7" />
-            <rect x="9" y="2.5" width="3" height="9.5" rx="1" fill="currentColor" opacity="0.9" />
-            <rect x="13.5" y="0" width="2.5" height="12" rx="1" fill="currentColor" />
-          </svg>
-        </div>
-      </header>
+  <div class="app-viewport-center" :data-runtime="runtime">
+    <div class="h5-shell phone-frame" :class="`theme-${props.statusTheme}`">
+      <!-- 系统/企业微信安全区占位（无模拟状态栏，由宿主系统或企微客户端原生渲染） -->
+      <div class="safe-top-inset" :class="props.statusTheme" aria-hidden="true" />
 
-      <!-- 页面内容滚动区域 -->
+      <!-- 页面内容流式滚动区域 -->
       <main class="mobile-screen-scroll">
         <slot />
       </main>
@@ -122,36 +113,21 @@ function handleGoRoleplay(): void {
 </template>
 
 <style scoped>
-.status-bar {
-  height: 36px;
-  padding: 0 18px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  font-weight: 600;
+.safe-top-inset {
+  height: env(safe-area-inset-top, 0px);
   flex-shrink: 0;
 }
 
-.status-bar.dark {
+.safe-top-inset.dark {
   background: var(--red);
-  color: #ffffff;
 }
 
-.status-bar.light {
+.safe-top-inset.light {
   background: var(--card);
-  color: var(--text);
-  border-bottom: 1px solid var(--border);
-}
-
-.status-signal {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .bottom-nav {
-  position: absolute;
+  position: fixed;
   left: 50%;
   bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);

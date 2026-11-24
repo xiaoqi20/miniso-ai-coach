@@ -33,11 +33,13 @@
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans SC',
     'Helvetica Neue', sans-serif;
-  background: #1e2025;
+  background: var(--bg);
   color: var(--text);
   min-height: 100vh;
+  min-height: 100dvh;
   font-size: 14px;
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -53,32 +55,35 @@ textarea:focus-visible {
   outline-offset: 2px;
 }
 
+/* ==================== 标准 H5 视口容器（去除手机黑框，预留企微 WebView 适配） ==================== */
 .app-viewport-center {
   min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
   display: flex;
   justify-content: center;
-  align-items: center;
+  background: var(--bg);
 }
 
-/* ==================== H5 移动视口框架（员工 / 店长） ==================== */
+.h5-shell,
 .phone-frame {
   width: 100%;
-  max-width: 393px;
-  height: 100vh;
-  height: 100dvh;
+  min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg);
   position: relative;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.48);
 }
 
-@media (min-width: 440px) {
+/* 桌面端直接访问 H5 路由时居中限宽展示，无黑框无假手机壳 */
+@media (min-width: 520px) {
+  .h5-shell,
   .phone-frame {
-    height: 844px;
-    border-radius: 42px;
-    border: 10px solid #121316;
+    max-width: 430px;
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    box-shadow: 0 0 28px rgba(26, 26, 26, 0.05);
   }
 }
 
@@ -87,7 +92,6 @@ textarea:focus-visible {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
   position: relative;
 }
 

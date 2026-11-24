@@ -61,3 +61,8 @@ cp .env.example .env
 1. **三角色同契约接口**：`src/api/auth.ts`、`src/api/staff.ts`、`src/api/hq.ts`、`src/api/manager.ts` 全部通过 `executeApi` 分发 `mock` / `real` 模式，与 `src/types/api.ts` 共用 `snake_case` 契约。写请求自动携带 `Content-Type: application/json`，发布、补训、复查接口通过 `Idempotency-Key` 幂等保护并识别 `Idempotent-Replay: true`。
 2. **Real 模式降级兼容**：在 T005 统计接口上线前，`/hq/releases/:releaseId` 若遇 `GET /hq/releases/{id}/stats` 返回 404，会自动降级展示 `GET /hq/releases/{id}` 的实时摘要而不阻断查看。
 3. **联调运行**：启动后端 FastAPI（`127.0.0.1:8000`）后，执行 `npm run dev:real` 或 `npm run build:real` 即可在同域 `/api/v1/*` 下完整联调审校发布、学习、对练、补训、复查与 48 小时统计闭环。
+
+## H5 视口与企业微信端预留说明
+
+- 移动端页面（`/login`、`/staff/*`、`/manager/*`）已去除模拟手机黑框与虚拟 `09:41` 状态栏，统一采用标准全屏流式 H5 容器（`100dvh` + `env(safe-area-inset-*)` 安全区；桌面浏览器预览时居中 `max-width: 430px` 轻边展示）。
+- [src/utils/runtime.ts](src/utils/runtime.ts) 预留了 `detectClientRuntime()`（自动识别 `h5` / `wxwork` 企业微信 WebView）、`data-client-runtime` 根节点属性、以及 `VITE_WECOM_AUTH_ENABLED` / `buildWeComAuthorizePath()` 网页授权切换入口，供 M2 接入企业微信工作台时复用现有全部业务页面与 `sk_session` 会话体系。

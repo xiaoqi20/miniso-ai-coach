@@ -3,6 +3,7 @@ import { createMemoryHistory } from 'vue-router'
 import { useSession } from '@/composables/useSession'
 import { mockDevLogin, resetMockState } from '@/mock/server'
 import { createAppRouter } from '@/router'
+import { buildWeComAuthorizePath, detectClientRuntime, isWeComRuntime } from '@/utils/runtime'
 
 describe('路由守卫、服务端会话恢复与角色隔离', () => {
   beforeEach(() => {
@@ -49,5 +50,13 @@ describe('路由守卫、服务端会话恢复与角色隔离', () => {
     await hqRouter.isReady()
 
     expect(hqRouter.currentRoute.value.name).toBe('hq-home')
+  })
+
+  it('运行时适配层可准确区分标准 H5 与企业微信 WebView 并生成预留授权路径', () => {
+    expect(detectClientRuntime('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)')).toBe('h5')
+    expect(isWeComRuntime('Mozilla/5.0 ... wxwork/4.1.20 MicroMessenger/7.0.1')).toBe(true)
+    expect(buildWeComAuthorizePath('/staff')).toBe(
+      '/api/v1/auth/wecom/authorize?redirect=%2Fstaff',
+    )
   })
 })
