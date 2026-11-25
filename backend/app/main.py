@@ -14,6 +14,7 @@ from ulid import ULID
 from app.api.routers.auth import auth_router, dev_router, identity_router
 from app.api.routers.health import health_router
 from app.api.routers.hq_courses import hq_router
+from app.api.routers.manager import manager_router
 from app.api.routers.staff_learning import staff_router
 from app.api.routers.staff_roleplay import roleplay_router
 from app.config import Settings, get_settings
@@ -105,6 +106,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(identity_router, prefix="/api/v1", tags=["identity"])
     app.include_router(hq_router, prefix="/api/v1")
+    app.include_router(manager_router, prefix="/api/v1")
     app.include_router(staff_router, prefix="/api/v1")
     app.include_router(roleplay_router, prefix="/api/v1")
     # 生产环境不注册该路由，访问直接得到 404，不暴露开发入口。

@@ -8,10 +8,10 @@
 
 ## 交付与验收
 
-- [ ] 店长能查看授权门店的应训名单、员工进度和卡点，能根据漏讲项发起补训。读写接口均按服务端身份和门店成员关系校验。
-- [ ] 店长只能确认符合契约的待复查记录。校验所依据的复练证据和状态版本，重复操作结果符合幂等约定。已完成复查包含操作人和服务端时间。
-- [ ] 跨店读写、在考点未改正时提前确认，以及基于过期状态复查都按契约处理。
-- [ ] 提供批次的 48 小时通关统计，验证两家门店的发布范围、历史应训名单、时间边界、重复通关及空名单口径。
+- [x] 店长能查看授权门店的应训名单、员工进度和卡点，能根据漏讲项发起补训。读写接口均按服务端身份和门店成员关系校验。
+- [x] 店长只能确认符合契约的待复查记录。校验所依据的复练证据和状态版本，重复操作结果符合幂等约定。已完成复查包含操作人和服务端时间。
+- [x] 跨店读写、在考点未改正时提前确认，以及基于过期状态复查都按契约处理。
+- [x] 提供批次的 48 小时通关统计，验证两家门店的发布范围、历史应训名单、时间边界、重复通关及空名单口径。
 
 ## T002 公共依赖接入说明（2026-11-23 返工后）
 
@@ -36,4 +36,23 @@
 
 ## 交付记录
 
-认领后在此登记交付、验证和 Codex 验收结论。 [记录模板](TEMPLATE.md)
+### 2026-11-25 首次交付（Antigravity App · `feat/t005-store-review`）
+
+- **变更文件**：
+  - `backend/app/schemas/manager.py`：新增 `IssueRetrainRequest`、`ReviewRetrainRequest`（`extra="forbid"`，拒绝身份字段与布尔值版本，确认复查强制校验 `evidence_attempt_id`）。
+  - `backend/app/services/manager.py`：实现店长看板读模型（`list_manager_releases`、`get_manager_release_detail`、`list_manager_release_assignees`、`get_manager_assignment_detail`）、补训指派（`issue_retrain`）、人工复查确认/驳回（`review_retrain`）以及总部与店长共用的 48 小时统计（`get_release_stats`）。
+  - `backend/app/api/routers/manager.py`：注册 `/api/v1/manager` 下 7 个店长接口（均通过 `require_roles(UserRole.store_manager)` 与服务端管辖门店范围校验）。
+  - `backend/app/api/routers/hq_courses.py`：新增 `GET /api/v1/hq/releases/{release_id}/stats`，与店长统计共用同一口径实现。
+  - `backend/app/main.py`：挂载 `manager_router`。
+  - `backend/tests/test_manager.py`：新增 6 组店长看板、补训、复查与 48 小时统计端到端及边界测试。
+  - 无新增或修改数据库表结构，无需新增 Alembic 迁移（沿用 T002/T004 现有 17 张业务表及 `retrains.open_flag` 生成列）。
+- **关键实现说明**：
+  - 写事务锁顺序统一为 `Assignment -> Retrain`，与 T004 `_persist_attempt` 保持一致，避免员工复练落库与店长操作并发发生死锁。
+  - `issue_retrain` / `review_retrain` 均在独立只读事务先做归属范围判定（越界直接 `404 NOT_FOUND`），写事务内持锁校验幂等键、状态、乐观锁 `expected_version`、冻结 `evidence_attempt_id`、目标考点命中与整轮通关，并在同一短事务内更新 `assignments.status`/`state_version`、写入 `audit_events` 及保存 `idempotency_records`。
+  - `review_retrain` 确认/驳回使用带 `status` 与 `version` 条件的 `UPDATE` 语句实现乐观锁；确认复查不回写 `qualified_at`/`first_passed_at`，驳回复查将 `baseline_round_no` 推进至当前最大轮次并保留历史证据于审计载荷。
+  - 48 小时统计严格使用左闭右开 `[published_at, published_at + 48h)` 窗口（不受 `deadline_hours` 影响），按发布快照 `assignments` 与不可回退 `qualified_at` 计算，空名单返回 `rate=null, empty_roster=true`。
+- **验证命令与结果**：
+  - `cd backend && uv run pytest -v`：`81 passed, 1 skipped`（新增 6 组 T005 测试及既有 75 项回归测试全部通过；1 项跳过为需要外部 `SHOUKE_TEST_MYSQL_URL` 的 T003 MySQL 并发发布测试）。
+- **未验证项**：
+  - 当前运行环境未连接外部 MySQL 8.4 实例，暂未对 `SHOUKE_TEST_MYSQL_URL` 实库复跑；无新增迁移脚本，MySQL 兼容语法（`with_for_update`、条件 `UPDATE`、`open_flag` 生成列）均遵循既有 T002–T004 约定。
+- **Codex 验收结论**：待验收。

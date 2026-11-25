@@ -17,6 +17,7 @@ from app.schemas.course import (
     PublishRequest,
 )
 from app.services import courses as course_service
+from app.services import manager as manager_service
 from app.services.common import decode_cursor
 
 hq_router = APIRouter(prefix="/hq", tags=["hq-courses"])
@@ -140,4 +141,17 @@ async def list_release_assignees(
         release_id,
         limit=limit,
         offset=decode_cursor(cursor),
+    )
+
+
+@hq_router.get("/releases/{release_id}/stats")
+async def get_release_stats(
+    release_id: str,
+    current_user: HqUserDep,
+    session: DbDep,
+) -> dict:
+    return await manager_service.get_release_stats(
+        session,
+        release_id,
+        allowed_store_ids=None,
     )
