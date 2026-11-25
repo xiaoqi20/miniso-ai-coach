@@ -55,4 +55,28 @@
   - `cd backend && uv run pytest -v`：`81 passed, 1 skipped`（新增 6 组 T005 测试及既有 75 项回归测试全部通过；1 项跳过为需要外部 `SHOUKE_TEST_MYSQL_URL` 的 T003 MySQL 并发发布测试）。
 - **未验证项**：
   - 当前运行环境未连接外部 MySQL 8.4 实例，暂未对 `SHOUKE_TEST_MYSQL_URL` 实库复跑；无新增迁移脚本，MySQL 兼容语法（`with_for_update`、条件 `UPDATE`、`open_flag` 生成列）均遵循既有 T002–T004 约定。
-- **Codex 验收结论**：待验收。
+- **Codex 验收结论**：未通过，详见下方验收记录。
+
+### 2026-11-25 Codex 验收（`ada6fed`）
+
+T005 验收未通过，退回「进行中」。T008 继续排队。
+
+- 独立复跑交付提交，默认套件 81 项通过、1 项跳过。在独立 MySQL 8.4.13 实例（`REPEATABLE READ`）上执行 Alembic 迁移、`alembic check`、种子初始化及被跳过的 T003 并发发布用例，均通过。将 T005 的同一组接口测试切到每次重新迁移并播种的临时 MySQL 库，6 组全部通过，覆盖权限、跨店隔离、补训状态、幂等重放、并发复查与 48 小时统计。
+- **P1｜不同员工的首次补训并发死锁。** 同一批次的两名员工分别完成正式对练并漏讲端盒规则，店长对两条任务同时使用不同幂等键发起首次补训。将两个请求同步到补训锁定查询之后，实库反复出现一条 `201`、一条 `500`。InnoDB 报告确认两个插入事务都持有 `ix_retrains_assignment_issued` 的 `supremum` 间隙锁并等待插入意向锁，错误码为 `1213`。复验要求不同任务均返回 `201`，各写一条补训及审计。同一任务并发同键仍需重放，异键仍需维持单开约束。[补训锁定查询](../../../backend/app/services/manager.py#L521)
+- **P2｜待复查的冻结证据会被最近 10 条成绩挤出。** 第 1 轮漏讲，店长指派补训，第 2 轮通关并冻结证据。再提交第 3 至 12 轮正式练习后，店长任务详情仍显示 `fixed_pending_review` 和第 2 轮的 `evidence_attempt_id`，`attempts` 只包含第 12 至 3 轮。店长 H5 仅在 `attempts` 中查找冻结证据，缺少员工原话和逐项命中详情时确认按钮仍可用，实库提交确认返回 `200`。复验要求保留最近 10 条历史的口径，待复查的冻结证据可独立读取，店长页面始终展示该轮原话及逐项证据。接口与前端改动由 Codex 协调，前端由 Antigravity App 实现。[任务详情成绩查询](../../../backend/app/services/manager.py#L369)
+
+### 2026-11-25 首次返工交付（Antigravity App · `feat/t005-store-review` & `feat/t007-operations-ui`）
+
+- **P1 修复（消除 `ix_retrains_assignment_issued` 间隙锁死锁 1213）**：
+  - 变更：[manager.py](../../../backend/app/services/manager.py) 新增普通读辅助函数 `_load_assignment_retrains`，替换 `issue_retrain` 与 `review_retrain` 中在 `Assignment` 主键行锁之后对 `retrains` 的 `SELECT ... FOR UPDATE`。同一任务的所有补训写入均已按 `Assignment` 主键行锁串行化，且数据库保留 `(assignment_id, open_flag)` 唯一约束兜底；去掉空范围锁定读后彻底消除 `supremum` 间隙锁与插入意向锁互等死锁。
+  - 回归测试：新增 [test_manager_mysql.py](../../../backend/tests/test_manager_mysql.py)（在 MySQL 8.4 `REPEATABLE-READ` 下用 `asyncio.Barrier(2)` 同步两名独立员工的首次补训到读取 `retrains` 之后，验证双 `201` 零死锁，同时验证同任务并发同键重放与异键 `409 RETRAIN_EXISTS`），并在 [test_manager.py](../../../backend/tests/test_manager.py) 增加 `retrains` 查询不带 `FOR UPDATE` 的运行时断言。
+- **P2 修复（保留最近 10 条成绩并独立返回冻结证据 + 前端展示与确认守卫）**：
+  - 后端（`feat/t005-store-review`）：[manager.py](../../../backend/app/services/manager.py) 的 `get_manager_assignment_detail` 保持 `attempts` 严格返回最近 10 条成绩，同时对不在最近 10 条内的 `retrains.evidence_attempt_id` 批量补查，并在每条 `retrains[i]` 中返回完整 `evidence_attempt` 对象（与 `attempts` 同结构，含 `answer_text`、`fact_checks`、`missed_required_facts`、`redline_hits`、`total`、`passed`、`round_no`、`computed_at`）。在 [test_manager.py](../../../backend/tests/test_manager.py) 新增第 2 轮冻结后再练 10 轮（共 12 轮）的回归测试。
+  - 前端（`feat/t007-operations-ui`）：`frontend/src/types/api.ts`、`frontend/src/mock/manager.ts`、`frontend/src/components/ManagerRetrainReviewCard.vue` 同步支持优先读取 `openRetrain.evidence_attempt` 并回退到 `attempts`；当冻结证据详情缺失时展示告警提示并禁用「确认复查通过」按钮；在 `frontend/tests/manager-flow.spec.ts` 新增 12 轮后仍展示第 2 轮冻结证据与证据缺失禁点的回归测试。
+- **验证命令与结果**：
+  - 后端 SQLite 全量测试：`cd backend && uv run pytest -v` -> **`83 passed, 2 skipped`**。
+  - 后端 MySQL 8.4.13 实库验证（临时 Docker `mysql:8.4` 容器，`REPEATABLE-READ`）：
+    - `alembic upgrade head`、`alembic check`（`No new upgrade operations detected.`）、`python -m app.seed` 均通过；
+    - `SHOUKE_TEST_MYSQL_URL="mysql+aiomysql://shouke:shouke_dev@127.0.0.1:13307/shouke" uv run pytest -v tests/test_manager_mysql.py` -> **`1 passed in 0.56s`**。
+  - 前端测试与双模式构建（`feat/t007-operations-ui`）：`npm test`（**`37 passed`**）、`npm run build` 与 `VITE_API_MODE=real npm run build` 均通过。
+- **Codex 验收结论**：待复验。

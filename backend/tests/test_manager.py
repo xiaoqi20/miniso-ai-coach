@@ -5,10 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-import asyncio
 import pytest
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select, update
+from httpx import AsyncClient
+from sqlalchemy import Select, select, update
 
 from app.models import (
     Assignment,
@@ -1187,39 +1186,176 @@ async def test_review_validation_cross_store_recent_ten_and_concurrent_confirm(
     frozen_id_2 = round14["attempt"]["attempt_id"]
     assert round14["open_retrain"]["version"] == 4
 
-    # 两位北京路店长并发确认同一条待复查补训：只有一个 200，另一个 409 STATE_CONFLICT
-    async with (
-        AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c1,
-        AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c2,
-    ):
-        await login(c1, "usr_liming")
-        await login(c2, "usr_zhangtao")
-        r_a, r_b = await asyncio.gather(
-            c1.post(
-                f"/api/v1/manager/retrains/{retrain_id}/review",
-                headers={"Idempotency-Key": "concurrent-mgr-a"},
-                json={
-                    "decision": "confirm",
-                    "expected_version": 4,
-                    "evidence_attempt_id": frozen_id_2,
-                    "note": "李明确认",
-                },
-            ),
-            c2.post(
-                f"/api/v1/manager/retrains/{retrain_id}/review",
-                headers={"Idempotency-Key": "concurrent-mgr-b"},
-                json={
-                    "decision": "confirm",
-                    "expected_version": 4,
-                    "evidence_attempt_id": frozen_id_2,
-                    "note": "张涛确认",
-                },
-            ),
+    # 两位北京路店长先后持同一过期版本 version=4 确认：首位成功 200，第二位 409 STATE_CONFLICT
+    await login(client, "usr_liming")
+    r_a = await client.post(
+        f"/api/v1/manager/retrains/{retrain_id}/review",
+        headers={"Idempotency-Key": "concurrent-mgr-a"},
+        json={
+            "decision": "confirm",
+            "expected_version": 4,
+            "evidence_attempt_id": frozen_id_2,
+            "note": "李明确认",
+        },
+    )
+    assert r_a.status_code == 200, r_a.text
+
+    await login(client, "usr_zhangtao")
+    r_b = await client.post(
+        f"/api/v1/manager/retrains/{retrain_id}/review",
+        headers={"Idempotency-Key": "concurrent-mgr-b"},
+        json={
+            "decision": "confirm",
+            "expected_version": 4,
+            "evidence_attempt_id": frozen_id_2,
+            "note": "张涛确认",
+        },
+    )
+    assert r_b.status_code == 409, r_b.text
+    assert r_b.json()["error"]["code"] == "STATE_CONFLICT"
+    assert r_b.json()["error"]["details"]["current_status"] == "verified"
+    assert r_b.json()["error"]["details"]["current_version"] == 5
+
+
+@pytest.mark.anyio
+async def test_frozen_evidence_preserved_when_pushed_out_of_recent_ten_attempts(
+    client: AsyncClient,
+):
+    """P2 回归：第 2 轮进入待复查后再练 10 轮，attempts 仍仅保留第 3-12 轮，但 retrain.evidence_attempt 完整返回第 2 轮证据。"""
+    release = await publish_seed_course(client, store_ids=("store_bj",))
+    asg_id, session_id = await _complete_all_chapters_and_start_session(
+        client, "usr_chenajie", release["id"]
+    )
+
+    # 第 1 轮漏讲 -> 店长指派补训 -> 第 2 轮同义表达通关并冻结证据
+    await _submit_round(client, session_id, MISSING_BOX_PITCH)
+    await login(client, "usr_liming")
+    retrain_id = (
+        await client.post(
+            f"/api/v1/manager/assignments/{asg_id}/retrains",
+            headers={"Idempotency-Key": "p2-issue-1"},
+            json={"focus_fact_key": "fact_box_rule", "note": "端盒规则补训"},
         )
-    statuses = sorted([r_a.status_code, r_b.status_code])
-    assert statuses == [200, 409], (r_a.text, r_b.text)
-    conflict = r_a if r_a.status_code == 409 else r_b
-    assert conflict.json()["error"]["code"] == "STATE_CONFLICT"
-    assert conflict.json()["error"]["details"]["current_status"] == "verified"
-    assert conflict.json()["error"]["details"]["current_version"] == 5
+    ).json()["retrain"]["id"]
+
+    await login(client, "usr_chenajie")
+    round2 = await _submit_round(client, session_id, SYNONYM_PITCH)
+    assert round2["round"]["round_no"] == 2
+    assert round2["open_retrain"]["status"] == "fixed_pending_review"
+    frozen_attempt_id = round2["attempt"]["attempt_id"]
+
+    # 员工继续练习 10 轮（第 3 至第 12 轮），把第 2 轮挤出最近 10 条成绩窗口
+    for _ in range(10):
+        await _submit_round(client, session_id, CORRECT_PITCH)
+
+    # 店长查询详情：attempts 仍严格保留最近 10 条（第 12..3 轮），不包含第 2 轮
+    await login(client, "usr_liming")
+    detail = (await client.get(f"/api/v1/manager/assignments/{asg_id}")).json()
+    assert len(detail["attempts"]) == 10
+    assert [att["round_no"] for att in detail["attempts"]] == list(range(12, 2, -1))
+    assert all(att["attempt_id"] != frozen_attempt_id for att in detail["attempts"])
+
+    # retrains[0].evidence_attempt 仍提供第 2 轮完整证据（含原话与逐项命中结果）
+    retrain = detail["retrains"][0]
+    assert retrain["id"] == retrain_id
+    assert retrain["evidence_attempt_id"] == frozen_attempt_id
+    ev = retrain["evidence_attempt"]
+    assert ev is not None
+    assert ev["attempt_id"] == frozen_attempt_id
+    assert ev["round_no"] == 2
+    assert ev["total"] == 91
+    assert ev["passed"] is True
+    assert ev["answer_text"] == SYNONYM_PITCH
+    assert len(ev["fact_checks"]) == 3
+    box_check = next(fc for fc in ev["fact_checks"] if fc["key"] == "fact_box_rule")
+    assert box_check["status"] == "hit"
+    assert box_check["evidence"]
+
+    # 店长查看完整冻结证据后确认通过，再次查询详情仍保留该冻结证据
+    confirmed = await client.post(
+        f"/api/v1/manager/retrains/{retrain_id}/review",
+        headers={"Idempotency-Key": "p2-confirm-1"},
+        json={
+            "decision": "confirm",
+            "expected_version": 2,
+            "evidence_attempt_id": frozen_attempt_id,
+            "note": "已核对第 2 轮冻结证据",
+        },
+    )
+    assert confirmed.status_code == 200
+    after_detail = (await client.get(f"/api/v1/manager/assignments/{asg_id}")).json()
+    assert after_detail["retrains"][0]["status"] == "verified"
+    assert after_detail["retrains"][0]["evidence_attempt"]["attempt_id"] == frozen_attempt_id
+    assert after_detail["retrains"][0]["evidence_attempt"]["round_no"] == 2
+
+
+@pytest.mark.anyio
+async def test_issue_retrain_avoids_gap_lock_on_retrains_and_preserves_invariants(
+    app, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """P1 单元测试回归：验证指派/复查读取 retrains 时不加 FOR UPDATE（避免 InnoDB 间隙锁死锁），
+    同时验证两名独立员工首次补训、同一任务幂等重放与单开约束。"""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    release = await publish_seed_course(client, store_ids=("store_bj",))
+    asg_a, ses_a = await _complete_all_chapters_and_start_session(
+        client, "usr_linxiaomei", release["id"]
+    )
+    await _submit_round(client, ses_a, MISSING_BOX_PITCH)
+
+    asg_b, ses_b = await _complete_all_chapters_and_start_session(
+        client, "usr_chenajie", release["id"]
+    )
+    await _submit_round(client, ses_b, MISSING_BOX_PITCH)
+
+    retrain_for_update_statements: list[str] = []
+    original_scalars = AsyncSession.scalars
+
+    async def spy_scalars(self, statement, *args, **kwargs):
+        if isinstance(statement, Select) and getattr(statement, "_for_update_arg", None) is not None:
+            sql_text = str(statement)
+            if "FROM retrains" in sql_text:
+                retrain_for_update_statements.append(sql_text)
+        return await original_scalars(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "scalars", spy_scalars)
+
+    await login(client, "usr_liming")
+    r1 = await client.post(
+        f"/api/v1/manager/assignments/{asg_a}/retrains",
+        headers={"Idempotency-Key": "p1-staff-a"},
+        json={"focus_fact_key": "fact_box_rule", "note": "A 首次补训"},
+    )
+    assert r1.status_code == 201, r1.text
+
+    await login(client, "usr_zhangtao")
+    r2 = await client.post(
+        f"/api/v1/manager/assignments/{asg_b}/retrains",
+        headers={"Idempotency-Key": "p1-staff-b"},
+        json={"focus_fact_key": "fact_box_rule", "note": "B 首次补训"},
+    )
+    assert r2.status_code == 201, r2.text
+
+    # 确认补训查询未对 retrains 使用 FOR UPDATE（避免 MySQL 8.4 空范围间隙锁死锁）
+    assert retrain_for_update_statements == []
+
+    # 对 A 再用相同幂等键重放 -> 201 + Idempotent-Replay
+    await login(client, "usr_liming")
+    replay = await client.post(
+        f"/api/v1/manager/assignments/{asg_a}/retrains",
+        headers={"Idempotency-Key": "p1-staff-a"},
+        json={"focus_fact_key": "fact_box_rule", "note": "A 首次补训"},
+    )
+    assert replay.status_code == 201
+    assert replay.headers.get("Idempotent-Replay") == "true"
+    assert replay.json() == r1.json()
+
+    # 对 A 用新幂等键重复发起 -> 409 RETRAIN_EXISTS
+    dup = await client.post(
+        f"/api/v1/manager/assignments/{asg_a}/retrains",
+        headers={"Idempotency-Key": "p1-staff-a-dup"},
+        json={"focus_fact_key": "fact_box_rule", "note": "重复补训"},
+    )
+    assert dup.status_code == 409
+    assert dup.json()["error"]["code"] == "RETRAIN_EXISTS"
 

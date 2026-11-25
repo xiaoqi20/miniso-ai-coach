@@ -4,8 +4,9 @@
 - 店长读写全部按服务端会话的管辖门店过滤，越界返回 404 NOT_FOUND；
 - 批次名单和 48 小时统计只读取发布时冻结的 assignments 快照与 qualified_at，
   不因成员变更、重复练习、补训或窗口外复查回写历史统计；
-- 写操作锁顺序统一为 Assignment -> Retrain，与 T004 评分回写保持一致，
-  避免员工复练落库与店长操作并发时发生 AB-BA 死锁。
+- 同一任务的补训写入（指派、复查、T004 复练回写）统一先获取 Assignment 主键行锁
+  串行化，再使用普通读读取 retrains，避免 InnoDB REPEATABLE READ 下未命中锁定读
+  引入间隙锁导致不同任务的并发首次补训死锁（Error 1213）。
 """
 
 from __future__ import annotations
@@ -339,12 +340,46 @@ async def list_manager_release_assignees(
     }
 
 
+def _attempt_detail_payload(attempt: RoleplayAttempt) -> dict[str, Any]:
+    """序列化店长详情中的单条正式成绩与逐项核验证据。"""
+    return {
+        "attempt_id": attempt.id,
+        "round_no": attempt.round.round_no,
+        "total": attempt.total,
+        "passed": attempt.passed,
+        "answer_text": attempt.round.answer_text,
+        "fact_checks": attempt.fact_checks,
+        "missed_required_facts": attempt.missed_required_facts,
+        "redline_hits": attempt.redline_hits,
+        "computed_at": iso_utc(attempt.computed_at),
+    }
+
+
+async def _load_assignment_retrains(
+    session: AsyncSession, assignment_id: str
+) -> list[Retrain]:
+    """按创建时间顺序普通读取任务的补训记录。
+
+    调用方必须已先持有该 Assignment 主键行锁；使用普通读而非 FOR UPDATE，
+    防止首次补训查无记录时在 retrains 二级索引上加间隙锁引发并发插入死锁。
+    """
+    return list(
+        (
+            await session.scalars(
+                select(Retrain)
+                .where(Retrain.assignment_id == assignment_id)
+                .order_by(Retrain.issued_at, Retrain.id)
+            )
+        ).all()
+    )
+
+
 async def get_manager_assignment_detail(
     session: AsyncSession,
     assignment_id: str,
     managed_store_ids: set[str],
 ) -> dict[str, Any]:
-    """读取店员任务详情：状态、最近 10 条正式成绩与原话、补训历史和审计日志。"""
+    """读取店员任务详情：状态、最近 10 条正式成绩与原话、补训历史（含冻结证据）和审计日志。"""
     if not managed_store_ids:
         raise ApiError(404, "NOT_FOUND", "学习任务不存在")
 
@@ -385,6 +420,28 @@ async def get_manager_assignment_detail(
         reverse=True,
     )
     retrain_ids = [item.id for item in retrains]
+
+    # 保持 attempts 严格返回最近 10 条；同时补查掉出最近 10 条的冻结复查证据，
+    # 确保员工继续练习后店长仍能查看冻结轮次的完整原话与逐项命中结果。
+    attempt_by_id: dict[str, RoleplayAttempt] = {item.id: item for item in attempts}
+    missing_evidence_ids = {
+        item.evidence_attempt_id
+        for item in retrains
+        if item.evidence_attempt_id and item.evidence_attempt_id not in attempt_by_id
+    }
+    if missing_evidence_ids:
+        extra_attempts = (
+            await session.scalars(
+                select(RoleplayAttempt)
+                .where(
+                    RoleplayAttempt.assignment_id == assignment.id,
+                    RoleplayAttempt.id.in_(missing_evidence_ids),
+                )
+                .options(selectinload(RoleplayAttempt.round))
+            )
+        ).all()
+        for extra in extra_attempts:
+            attempt_by_id[extra.id] = extra
 
     audit_items: list[dict[str, Any]] = []
     if retrain_ids:
@@ -428,20 +485,7 @@ async def get_manager_assignment_detail(
             "qualified_at": iso_or_none(assignment.qualified_at),
             "state_version": assignment.state_version,
         },
-        "attempts": [
-            {
-                "attempt_id": attempt.id,
-                "round_no": attempt.round.round_no,
-                "total": attempt.total,
-                "passed": attempt.passed,
-                "answer_text": attempt.round.answer_text,
-                "fact_checks": attempt.fact_checks,
-                "missed_required_facts": attempt.missed_required_facts,
-                "redline_hits": attempt.redline_hits,
-                "computed_at": iso_utc(attempt.computed_at),
-            }
-            for attempt in attempts
-        ],
+        "attempts": [_attempt_detail_payload(attempt) for attempt in attempts],
         "retrains": [
             {
                 "id": retrain.id,
@@ -454,6 +498,12 @@ async def get_manager_assignment_detail(
                 "baseline_round_no": retrain.baseline_round_no,
                 "evidence_round_no": retrain.evidence_round_no,
                 "evidence_attempt_id": retrain.evidence_attempt_id,
+                "evidence_attempt": (
+                    _attempt_detail_payload(attempt_by_id[retrain.evidence_attempt_id])
+                    if retrain.evidence_attempt_id
+                    and retrain.evidence_attempt_id in attempt_by_id
+                    else None
+                ),
                 "issued_by": user_brief(retrain.issuer),
                 "issued_at": iso_utc(retrain.issued_at),
                 "reviewed_by": user_brief(retrain.reviewer)
@@ -518,16 +568,7 @@ async def issue_retrain(
             if replay is not None:
                 return replay
 
-            retrains = list(
-                (
-                    await session.scalars(
-                        select(Retrain)
-                        .where(Retrain.assignment_id == assignment.id)
-                        .order_by(Retrain.issued_at, Retrain.id)
-                        .with_for_update()
-                    )
-                ).all()
-            )
+            retrains = await _load_assignment_retrains(session, assignment.id)
             existing_open = open_retrain_for(retrains)
             if existing_open is not None:
                 raise ApiError(
@@ -768,16 +809,7 @@ async def review_retrain(
             if replay is not None:
                 return replay
 
-            retrains = list(
-                (
-                    await session.scalars(
-                        select(Retrain)
-                        .where(Retrain.assignment_id == assignment.id)
-                        .order_by(Retrain.issued_at, Retrain.id)
-                        .with_for_update()
-                    )
-                ).all()
-            )
+            retrains = await _load_assignment_retrains(session, assignment.id)
             retrain = next((item for item in retrains if item.id == retrain_id), None)
             if retrain is None:
                 raise ApiError(404, "NOT_FOUND", "补训记录不存在")
