@@ -78,6 +78,24 @@ function matchPriceFact(
   return { hit: false, evidence: null }
 }
 
+function matchBoundaryToken(textCf: string, rawToken: string): boolean {
+  const token = casefold(rawToken)
+  if (!token) return false
+
+  const startsWithDigit = /^\d/.test(token)
+  const endsWithDigit = /\d$/.test(token)
+  const startsWithAsciiLetter = /^[a-z]/.test(token)
+  const endsWithAsciiLetter = /[a-z]$/.test(token)
+
+  if (!startsWithDigit && !endsWithDigit && !startsWithAsciiLetter && !endsWithAsciiLetter) {
+    return textCf.includes(token)
+  }
+
+  const prefix = startsWithDigit ? '(?<![0-9.])' : startsWithAsciiLetter ? '(?<![a-z])' : ''
+  const suffix = endsWithDigit ? '(?![0-9.])' : endsWithAsciiLetter ? '(?![a-z])' : ''
+  return new RegExp(`${prefix}${escapeRegex(token)}${suffix}`).test(textCf)
+}
+
 function matchGroupsFact(
   text: string,
   groups: string[][],
@@ -85,7 +103,7 @@ function matchGroupsFact(
   for (const clause of splitClauses(text)) {
     const clauseCf = clause.toLowerCase()
     const matched = groups.every((group) =>
-      group.some((word) => clauseCf.includes(casefold(word))),
+      group.some((word) => matchBoundaryToken(clauseCf, word)),
     )
     if (matched) {
       return { hit: true, evidence: clause }
@@ -172,7 +190,7 @@ export function scoreMockAnswer(rubric: RubricRules, answerText: string): MockSc
   }
   for (const key of DIMENSION_ORDER) {
     const keywords = rubric.dimensions[key]?.keywords ?? []
-    const matched = new Set(keywords.filter((kw) => textCf.includes(casefold(kw))))
+    const matched = new Set(keywords.filter((kw) => matchBoundaryToken(textCf, kw)))
     hitCounts[key] = matched.size
   }
 

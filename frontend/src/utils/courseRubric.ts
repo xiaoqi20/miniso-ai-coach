@@ -20,7 +20,7 @@ const COMMON_REDLINES: Array<{ term: string; reason: string }> = [
   { term: '保真退十', reason: '禁止未经授权的赔付承诺' },
 ]
 
-/** 常见规格计量单位同义变体，便于员工口语或英文缩写准确命中 */
+/** 常见规格计量单位同义变体，用于将「数值+单位」绑定为同一条件组并支持口语/缩写 */
 const UNIT_SYNONYMS: Record<string, string[]> = {
   厘米: ['厘米', 'cm'],
   cm: ['cm', '厘米'],
@@ -28,9 +28,36 @@ const UNIT_SYNONYMS: Record<string, string[]> = {
   mm: ['mm', '毫米'],
   毫升: ['毫升', 'ml'],
   ml: ['ml', '毫升'],
-  克: ['克', 'g'],
+  千克: ['千克', 'kg'],
+  kg: ['kg', '千克'],
   小时: ['小时', 'h'],
+  h: ['h', '小时'],
+  克: ['克', 'g'],
+  g: ['g', '克'],
+  米: ['米', 'm'],
+  升: ['升', 'l'],
+  秒: ['秒'],
+  分钟: ['分钟'],
+  天: ['天'],
+  个: ['个'],
+  只: ['只'],
+  件: ['件'],
+  套: ['套'],
+  盒: ['盒'],
+  格: ['格'],
 }
+
+const LEADING_UNIT_RE = new RegExp(
+  `^(${Object.keys(UNIT_SYNONYMS)
+    .sort((a, b) => b.length - a.length)
+    .map((unit) => unit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|')})(?![a-z])(.*)$`,
+  'i',
+)
+
+/** 严格匹配标准零售金额（如 ¥39.00 / 39元 / 39.9 / RMB 79 / 零售价 39 元），拒绝「39 厘米」「79 毫升」等规格或占位文本 */
+const VALID_PRICE_RE =
+  /^(?:(?:零售价|售价|价格|定价|标价|单价)[:：]?)?(?:[¥￥]|rmb|cny)?(\d+(?:\.\d{1,2})?)(?:元|块|块钱|rmb|cny)?$/i
 
 /** 从短语中提取用于关键词匹配的紧凑词元，去重并过滤单字噪音 */
 function extractTokens(text: string): string[] {
@@ -41,13 +68,18 @@ function extractTokens(text: string): string[] {
   return Array.from(new Set(parts))
 }
 
-/** 从价格文案中提取规范化正数金额（无有效数字如「以门店价签为准」返回空串） */
+/** 仅接受标准零售金额文案并提取规范化正数金额，规格文本（如「39 厘米」「79 毫升」）或占位文案返回空串 */
 export function extractValidPriceNumber(priceText: string): string {
-  const match = String(priceText ?? '').match(/\d+(?:\.\d+)?/)
+  const compact = String(priceText ?? '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/g, '')
+  if (!compact) return ''
+  const match = compact.match(VALID_PRICE_RE)
   if (!match) return ''
-  const num = Number(match[0])
+  const num = Number(match[1])
   if (!Number.isFinite(num) || num <= 0) return ''
-  return match[0].replace(/\.00$/, '').replace(/\.0$/, '')
+  return String(num)
 }
 
 /**
@@ -55,24 +87,18 @@ export function extractValidPriceNumber(priceText: string): string {
  * 严禁用 `includes(priceNum)` 粗暴过滤，避免售价为 39 元时误删「宽度 39 厘米」等含同数字的必考规格。
  */
 function isPurePriceFact(label: string, priceNum: string): boolean {
-  if (!priceNum) return false
-  const compact = label.trim().replace(/\s+/g, '')
-  const escaped = priceNum.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const purePriceRe = new RegExp(
-    `^(?:零售价|售价|价格|定价|标价|单价)?[¥￥]?${escaped}(?:\\.00?)?(?:元|块|块钱|rmb|cny)?$`,
-    'i',
-  )
-  return purePriceRe.test(compact)
+  return Boolean(priceNum) && extractValidPriceNumber(label) === priceNum
 }
 
 /**
  * 将单条必考规格事实拆分为分组匹配规则：
- * - 带数字的规格（如「宽度 39 厘米」「宽度39厘米」「30秒快速出汽」）：拆出文字段与数字段，要求同句同时命中，
- *   确保只报售价 39 元但漏讲「宽度/厘米」时必然判为 missed。
+ * - 带数值和计量单位的规格（如「宽度 39 厘米」「容量 480ml」「30秒快速出汽」）：将「数值+单位」及其同义缩写绑定在同一条件组
+ *   （如 `['39 厘米', '39厘米', '39 cm', '39cm']`），避免拆成独立数字 `['39']` 后被同句售价「39 元」凑齐或被子串误命中。
  * - 纯中文短语（如「透明亚克力材质」）：保留完整短语分组。
  */
 function buildGroupsForFactLabel(label: string): string[][] {
   const rawParts = label
+    .normalize('NFKC')
     .trim()
     .split(/[\s:：/|+·\-]+/)
     .flatMap((part) => part.split(/(\d+(?:\.\d+)?)/))
@@ -85,13 +111,36 @@ function buildGroupsForFactLabel(label: string): string[][] {
 
   const groups: string[][] = []
   const seen = new Set<string>()
-  for (const part of rawParts) {
-    const key = part.toLowerCase()
-    if (seen.has(key)) continue
+  const pushGroup = (variants: string[]): void => {
+    const deduped = Array.from(new Set(variants.map((v) => v.trim()).filter(Boolean)))
+    if (deduped.length === 0) return
+    const key = deduped.map((v) => v.toLowerCase()).join('|')
+    if (seen.has(key)) return
     seen.add(key)
-    const variants = UNIT_SYNONYMS[key]
-    groups.push(variants ? [...variants] : [part])
+    groups.push(deduped)
   }
+
+  for (let i = 0; i < rawParts.length; i += 1) {
+    const part = rawParts[i]
+    const next = rawParts[i + 1]
+    if (/^\d+(?:\.\d+)?$/.test(part) && next) {
+      const unitMatch = next.match(LEADING_UNIT_RE)
+      if (unitMatch) {
+        const unit = unitMatch[1]
+        const rest = unitMatch[2].trim()
+        const unitVariants = UNIT_SYNONYMS[unit.toLowerCase()] ?? [unit]
+        const combined = unitVariants.flatMap((u) => [`${part} ${u}`, `${part}${u}`])
+        pushGroup(combined)
+        i += 1
+        if (rest) {
+          pushGroup([rest])
+        }
+        continue
+      }
+    }
+    pushGroup([part])
+  }
+
   return groups.length > 0 ? groups : [[label.trim()]]
 }
 
@@ -105,7 +154,7 @@ export function validateQuickCourseInput(input: QuickCourseRubricInput): string[
     issues.push('新品名称')
   }
   if (!extractValidPriceNumber(input.price)) {
-    issues.push('有效数字零售价（如 ¥39.00）')
+    issues.push('有效零售金额（如 ¥39.00、39 元，不得填写规格单位或占位文案）')
   }
   const factItems = input.facts
     .split(/[,，、\n]+/)
@@ -133,7 +182,7 @@ export function validateCourseVersionForReview(version: HqCourseVersionDetail): 
   }
   const contentPriceNum = extractValidPriceNumber(product?.price ?? '')
   if (!contentPriceNum) {
-    issues.push('缺少有效数字零售价（不得使用「以门店价签为准」等占位文案）')
+    issues.push('零售价格式无效（请填写如 ¥79.00 或 79 元等标准金额，不得填写规格单位或占位文案）')
   }
   if (chapters.length === 0) {
     issues.push('至少需要 1 个授课章节')
@@ -167,9 +216,13 @@ export function validateCourseVersionForReview(version: HqCourseVersionDetail): 
     }
   }
 
+  const escapedPrice = contentPriceNum.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   if (!rubric.demo_pitch?.trim()) {
     issues.push('绑定评分规则缺少金牌示范话术')
-  } else if (contentPriceNum && !rubric.demo_pitch.includes(contentPriceNum)) {
+  } else if (
+    contentPriceNum &&
+    !new RegExp(`(?<![0-9.])${escapedPrice}(?![0-9.])`).test(rubric.demo_pitch)
+  ) {
     issues.push(`绑定金牌示范话术未包含当前零售价 ${contentPriceNum} 元`)
   }
 

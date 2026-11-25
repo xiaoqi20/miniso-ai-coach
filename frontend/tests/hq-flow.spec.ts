@@ -10,7 +10,7 @@ import { mockPublishHqCourseVersion } from '@/mock/hq'
 import { mockDevLogin, resetMockState } from '@/mock/server'
 import { createAppRouter } from '@/router'
 import { createClientUuid } from '@/utils/assignment'
-import { buildCourseRubricFromForm } from '@/utils/courseRubric'
+import { buildCourseRubricFromForm, extractValidPriceNumber } from '@/utils/courseRubric'
 
 async function waitForSelector(wrapper: ReturnType<typeof mount>, selector: string): Promise<void> {
   await vi.waitFor(
@@ -422,7 +422,29 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
     expect(missedRound.attempt.missed_required_facts.map((f) => f.label)).toContain('宽度 39 厘米')
     expect(missedRound.assignment.status).toBe('failed')
 
-    // 对照 B：完整复述含「宽度 39 厘米」的金牌示范 -> 全部命中并正式通关
+    // 对照 B：错报尺寸为「139 厘米」（含同句出现 39 元 + 宽度 139 厘米）-> 不得子串误命中，必须未通关且任务状态为 failed
+    const wrongSizeRound = await staffApi.submitRoleplayRound(sessionRes.session.id, {
+      client_round_id: createClientUuid(),
+      answer_text:
+        '您好，推荐您看看这款零售价 39 元的宽体透明收纳盒，透明亚克力材质且宽度 139 厘米，做工实用性价比高，结账还可以顺手搭配 8元标签贴一起组合使用，您放心试试看，我可以帮您挑选哦！',
+      question_variant: 'default',
+    })
+    expect(wrongSizeRound.attempt.passed).toBe(false)
+    expect(wrongSizeRound.attempt.missed_required_facts.map((f) => f.label)).toContain('宽度 39 厘米')
+    expect(wrongSizeRound.assignment.status).toBe('failed')
+
+    // 对照 C：正确表达「39 cm」缩写 -> 应精准命中并正式通关
+    const cmAliasRound = await staffApi.submitRoleplayRound(sessionRes.session.id, {
+      client_round_id: createClientUuid(),
+      answer_text:
+        '您好，推荐您看看这款宽体透明收纳盒！它零售价 39 元，核心特点包括透明亚克力材质，宽度 39 cm，放文件文具都很宽敞。这款在性价比和实用做工上都很放心，结账时还可以顺手搭配 8元标签贴一起组合使用，您放心试试看，我可以帮您挑选哦！',
+      question_variant: 'default',
+    })
+    expect(cmAliasRound.attempt.passed).toBe(true)
+    expect(cmAliasRound.attempt.missed_required_facts).toHaveLength(0)
+    expect(cmAliasRound.assignment.status).toBe('passed')
+
+    // 对照 D：完整复述含「宽度 39 厘米」的金牌示范 -> 全部命中并正式通关
     const passedRound = await staffApi.submitRoleplayRound(sessionRes.session.id, {
       client_round_id: createClientUuid(),
       answer_text: rubric.demo_pitch,
@@ -431,6 +453,92 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
     expect(passedRound.attempt.passed).toBe(true)
     expect(passedRound.attempt.missed_required_facts).toHaveLength(0)
     expect(passedRound.assignment.status).toBe('passed')
+
+    wrapper.unmount()
+  })
+
+  it('P2 三次复验回归：快捷发布与工作台双入口均拒绝「39 厘米」「79 毫升」等规格文本作为售价，合法金额格式可正常通过', async () => {
+    // 1. 纯函数边界校验：合法金额 vs 规格/占位文本
+    expect(extractValidPriceNumber('¥39.00')).toBe('39')
+    expect(extractValidPriceNumber('￥79')).toBe('79')
+    expect(extractValidPriceNumber('39 元')).toBe('39')
+    expect(extractValidPriceNumber('39.90')).toBe('39.9')
+    expect(extractValidPriceNumber('RMB 59')).toBe('59')
+    expect(extractValidPriceNumber('售价 79 块')).toBe('79')
+    expect(extractValidPriceNumber('５９元')).toBe('59')
+    expect(extractValidPriceNumber('39 厘米')).toBe('')
+    expect(extractValidPriceNumber('79 毫升')).toBe('')
+    expect(extractValidPriceNumber('39cm')).toBe('')
+    expect(extractValidPriceNumber('230克')).toBe('')
+    expect(extractValidPriceNumber('以门店价签为准')).toBe('')
+    expect(extractValidPriceNumber('0')).toBe('')
+    expect(extractValidPriceNumber('-39')).toBe('')
+    expect(extractValidPriceNumber('39-59元')).toBe('')
+
+    await mockDevLogin('usr_linmin')
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/hq')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    await flushPromises()
+
+    // 2. 快捷入口填入「39 厘米」作为售价：存草稿和直接发布均应被拦截，不创建课程
+    await wrapper.find('[data-testid="hq-quick-name"]').setValue('防误填收纳盒')
+    await wrapper.find('[data-testid="hq-quick-sku"]').setValue('MINISO-PRICE-UNIT')
+    await wrapper.find('[data-testid="hq-quick-price"]').setValue('39 厘米')
+    await wrapper.find('[data-testid="hq-quick-facts"]').setValue('透明亚克力材质, 宽度 39 厘米')
+    await wrapper.find('[data-testid="hq-quick-desc"]').setValue('加厚透明收纳盒，实用耐用。')
+    await wrapper.find('[data-testid="hq-quick-check-all"]').setValue(true)
+
+    await wrapper.find('[data-testid="hq-quick-save-draft-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-quick-error"]').text()).toContain('有效零售金额')
+
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-quick-error"]').text()).toContain('有效零售金额')
+
+    const coursesBefore = await hqApi.listHqCourses()
+    expect(coursesBefore.items.some((c) => c.sku_code === 'MINISO-PRICE-UNIT')).toBe(false)
+
+    // 修正为合法金额格式「39 元」后，可顺利发布
+    await wrapper.find('[data-testid="hq-quick-price"]').setValue('39 元')
+    await wrapper.find('[data-testid="hq-quick-publish-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-quick-error"]').exists()).toBe(false)
+    const coursesAfter = await hqApi.listHqCourses()
+    expect(coursesAfter.items.some((c) => c.sku_code === 'MINISO-PRICE-UNIT')).toBe(true)
+
+    // 3. 课程工作台将 79 元保温杯售价改为「79 毫升」并保存 -> 审校必须被拦截；改回「79 元」保存后审校通过
+    await router.push('/hq/courses/crs_thermos')
+    await waitForSelector(wrapper, '[data-testid="hq-input-product-price"]')
+
+    await wrapper.find('[data-testid="hq-input-product-price"]').setValue('79 毫升')
+    await wrapper.find('[data-testid="hq-save-draft-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-review-blockers"]').text()).toContain('零售价格式无效')
+
+    await wrapper.find('[data-testid="hq-check-price"]').setValue(true)
+    await wrapper.find('[data-testid="hq-check-spec"]').setValue(true)
+    await wrapper.find('[data-testid="hq-check-redline"]').setValue(true)
+    await wrapper.find('[data-testid="hq-submit-review-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-action-error"]').text()).toContain('零售价格式无效')
+    expect(wrapper.find('[data-testid="hq-reviewed-summary"]').exists()).toBe(false)
+
+    // 改为合法格式「79 元」并保存 -> 审校面板无阻塞且审校通过
+    await wrapper.find('[data-testid="hq-input-product-price"]').setValue('79 元')
+    await wrapper.find('[data-testid="hq-save-draft-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-review-blockers"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="hq-check-price"]').setValue(true)
+    await wrapper.find('[data-testid="hq-check-spec"]').setValue(true)
+    await wrapper.find('[data-testid="hq-check-redline"]').setValue(true)
+    await wrapper.find('[data-testid="hq-submit-review-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="hq-reviewed-summary"]').exists()).toBe(true)
 
     wrapper.unmount()
   })

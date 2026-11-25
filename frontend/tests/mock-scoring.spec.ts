@@ -55,4 +55,56 @@ describe('M1 §8.3-8.5 评分规则引擎一致性测试', () => {
     )
     expect(fullWidthHit.fact_checks.every((f) => f.status === 'hit')).toBe(true)
   })
+
+  it('规格分组数字与单位边界匹配：错报尺寸/数量不得通过子串误命中', () => {
+    // 端盒 16 个 / 60 个不得通过子串命中端盒 6 个
+    const wrongBoxCount = scoreMockAnswer(
+      CHIIKAWA_RUBRIC,
+      '这款是正版联名授权，59 元一个，端盒 16 个不重复，您摸摸样品，加 9.9 元配防尘挂袋。',
+    )
+    expect(wrongBoxCount.passed).toBe(false)
+    expect(wrongBoxCount.missed_required_facts.map((f) => f.key)).toEqual(['fact_box_rule'])
+
+    const specRubric = {
+      ...CHIIKAWA_RUBRIC,
+      required_facts: [
+        {
+          key: 'fact_price',
+          label: '零售价 39 元',
+          type: 'price' as const,
+          patterns: ['39'],
+          negation_guard: true,
+        },
+        {
+          key: 'fact_width',
+          label: '宽度 39 厘米',
+          type: 'groups' as const,
+          groups: [['宽度'], ['39 厘米', '39厘米', '39 cm', '39cm']],
+        },
+      ],
+    }
+
+    // 错报 139 厘米、390 厘米、39.5 厘米、甚至同句含 39 元+宽度 139 厘米，均不得命中
+    for (const wrongText of [
+      '零售价 39 元，宽度 139 厘米，实用好用。',
+      '零售价 39 元，宽度139cm，实用好用。',
+      '零售价 39 元，宽度 390 厘米，实用好用。',
+      '零售价 39 元，宽度 39.5 厘米，实用好用。',
+      '这款零售价 39 元的收纳盒宽度 139 厘米，实用好用。',
+    ]) {
+      const res = scoreMockAnswer(specRubric, wrongText)
+      expect(res.missed_required_facts.map((f) => f.key)).toContain('fact_width')
+    }
+
+    // 正确表达（39 厘米 / 39厘米 / 39 cm / 39cm）均应命中
+    for (const rightText of [
+      '零售价 39 元，宽度 39 厘米，实用好用。',
+      '零售价 39 元，宽度39厘米，实用好用。',
+      '零售价 39 元，宽度 39 cm，实用好用。',
+      '零售价 39 元，宽度39cm，实用好用。',
+    ]) {
+      const res = scoreMockAnswer(specRubric, rightText)
+      expect(res.missed_required_facts).toEqual([])
+    }
+  })
 })
