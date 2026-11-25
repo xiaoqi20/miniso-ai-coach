@@ -433,7 +433,44 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
     expect(wrongSizeRound.attempt.missed_required_facts.map((f) => f.label)).toContain('宽度 39 厘米')
     expect(wrongSizeRound.assignment.status).toBe('failed')
 
-    // 对照 C：正确表达「39 cm」缩写 -> 应精准命中并正式通关
+    // 对照 B2：同句跨字段错报「宽度为 139 厘米和高度为 39 厘米」-> 高度数值不得串用到宽度，必须未通关且任务状态为 failed
+    const swappedSameClauseRound = await staffApi.submitRoleplayRound(sessionRes.session.id, {
+      client_round_id: createClientUuid(),
+      answer_text:
+        '您好，推荐您看看这款宽体透明收纳盒！零售价 39 元，透明亚克力材质，宽度为 139 厘米和高度为 39 厘米，做工实用性价比高，结账可以顺手搭配 8元标签贴一起组合使用，您放心试试看，我可以帮您挑选哦！',
+      question_variant: 'default',
+    })
+    expect(swappedSameClauseRound.attempt.passed).toBe(false)
+    expect(swappedSameClauseRound.attempt.missed_required_facts.map((f) => f.label)).toContain(
+      '宽度 39 厘米',
+    )
+    expect(swappedSameClauseRound.assignment.status).toBe('failed')
+
+    // 对照 B3：分句跨字段错报「宽度为 139 厘米。高度为 39 厘米。」-> 与同句结果一致，必须未通关且任务状态为 failed
+    const swappedSplitClauseRound = await staffApi.submitRoleplayRound(sessionRes.session.id, {
+      client_round_id: createClientUuid(),
+      answer_text:
+        '您好，推荐您看看这款宽体透明收纳盒！零售价 39 元，透明亚克力材质，宽度为 139 厘米。高度为 39 厘米。做工实用性价比高，结账可以顺手搭配 8元标签贴一起组合使用，您放心试试看，我可以帮您挑选哦！',
+      question_variant: 'default',
+    })
+    expect(swappedSplitClauseRound.attempt.passed).toBe(false)
+    expect(swappedSplitClauseRound.attempt.missed_required_facts.map((f) => f.label)).toContain(
+      '宽度 39 厘米',
+    )
+    expect(swappedSplitClauseRound.assignment.status).toBe('failed')
+
+    // 对照 C：同句正确表达「宽度为 39 厘米和高度为 139 厘米」-> 字段与测量值正确对应，应正式通关
+    const rightSameClauseRound = await staffApi.submitRoleplayRound(sessionRes.session.id, {
+      client_round_id: createClientUuid(),
+      answer_text:
+        '您好，推荐您看看这款宽体透明收纳盒！它零售价 39 元，透明亚克力材质，宽度为 39 厘米和高度为 139 厘米，做工实用性价比高，结账还可以顺手搭配 8元标签贴一起组合使用，您放心试试看，我可以帮您挑选哦！',
+      question_variant: 'default',
+    })
+    expect(rightSameClauseRound.attempt.passed).toBe(true)
+    expect(rightSameClauseRound.attempt.missed_required_facts).toHaveLength(0)
+    expect(rightSameClauseRound.assignment.status).toBe('passed')
+
+    // 对照 D：正确表达「39 cm」缩写 -> 应精准命中并正式通关
     const cmAliasRound = await staffApi.submitRoleplayRound(sessionRes.session.id, {
       client_round_id: createClientUuid(),
       answer_text:
@@ -444,7 +481,7 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
     expect(cmAliasRound.attempt.missed_required_facts).toHaveLength(0)
     expect(cmAliasRound.assignment.status).toBe('passed')
 
-    // 对照 D：完整复述含「宽度 39 厘米」的金牌示范 -> 全部命中并正式通关
+    // 对照 E：完整复述含「宽度 39 厘米」的金牌示范 -> 全部命中并正式通关
     const passedRound = await staffApi.submitRoleplayRound(sessionRes.session.id, {
       client_round_id: createClientUuid(),
       answer_text: rubric.demo_pitch,

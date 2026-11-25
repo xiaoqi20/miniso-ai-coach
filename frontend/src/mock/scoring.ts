@@ -78,22 +78,79 @@ function matchPriceFact(
   return { hit: false, evidence: null }
 }
 
-function matchBoundaryToken(textCf: string, rawToken: string): boolean {
+interface TokenSpan {
+  start: number
+  end: number
+}
+
+const FIELD_VALUE_CONNECTOR_RE =
+  /^[\s:：=＝~～]*(?:(?:大约|大概|差不多|足足|整整|刚好|正好|约莫|一共|总共|仅)?(?:为|是|有|在|约|约为|约有|达|达到|做到|做到了|接近|近|重约|长达|宽达|高达|厚达|深达|仅重)?)[\s:：=＝~～]*$/
+const REVERSE_VALUE_FIELD_RE = /^[\s的]*$/
+const LEADING_OWN_ASSIGN_RE = /(?:为|是|有|:|：|=|＝)\s*$/
+const TRAILING_OWN_VALUE_RE =
+  /^[\s:：=＝~～]*(?:(?:大约|大概|差不多|足足|整整|刚好|正好|约莫|一共|总共|仅)?(?:为|是|有|在|约|约为|约有|达|达到|做到|做到了|接近|近|重约|长达|宽达|高达|厚达|深达|仅重)?)[\s:：=＝~～]*\d/
+
+function buildBoundaryTokenRegex(rawToken: string): RegExp | null {
   const token = casefold(rawToken)
-  if (!token) return false
+  if (!token) return null
 
   const startsWithDigit = /^\d/.test(token)
   const endsWithDigit = /\d$/.test(token)
   const startsWithAsciiLetter = /^[a-z]/.test(token)
   const endsWithAsciiLetter = /[a-z]$/.test(token)
 
-  if (!startsWithDigit && !endsWithDigit && !startsWithAsciiLetter && !endsWithAsciiLetter) {
-    return textCf.includes(token)
-  }
-
   const prefix = startsWithDigit ? '(?<![0-9.])' : startsWithAsciiLetter ? '(?<![a-z])' : ''
   const suffix = endsWithDigit ? '(?![0-9.])' : endsWithAsciiLetter ? '(?![a-z])' : ''
-  return new RegExp(`${prefix}${escapeRegex(token)}${suffix}`).test(textCf)
+  return new RegExp(`${prefix}${escapeRegex(token)}${suffix}`, 'g')
+}
+
+function findBoundaryTokenSpans(textCf: string, rawToken: string): TokenSpan[] {
+  const regex = buildBoundaryTokenRegex(rawToken)
+  if (!regex) return []
+  const spans: TokenSpan[] = []
+  for (const match of textCf.matchAll(regex)) {
+    const start = match.index ?? 0
+    spans.push({ start, end: start + match[0].length })
+  }
+  return spans
+}
+
+function matchBoundaryToken(textCf: string, rawToken: string): boolean {
+  const regex = buildBoundaryTokenRegex(rawToken)
+  return regex ? regex.test(textCf) : false
+}
+
+function isTextFieldGroup(group: string[]): boolean {
+  const tokens = group.map((word) => casefold(word)).filter(Boolean)
+  return tokens.length > 0 && tokens.every((token) => !/^\d/.test(token))
+}
+
+function isMeasurementGroup(group: string[]): boolean {
+  const tokens = group.map((word) => casefold(word)).filter(Boolean)
+  return tokens.length > 0 && tokens.every((token) => /^\d+(?:\.\d+)?(?:\s*\S+)?$/.test(token))
+}
+
+function isBoundFieldMeasurement(
+  clauseCf: string,
+  fieldSpan: TokenSpan,
+  measureSpan: TokenSpan,
+): boolean {
+  // 正向绑定：如「宽度 39 厘米」「宽度为 39 厘米」「宽度约 39 cm」「宽度：39cm」
+  if (fieldSpan.end <= measureSpan.start) {
+    const between = clauseCf.slice(fieldSpan.end, measureSpan.start)
+    return FIELD_VALUE_CONNECTOR_RE.test(between)
+  }
+  // 倒装绑定：如「39 厘米宽度」「39 厘米的宽度」，排除前属其他字段赋值或字段后自有其他数值的情况
+  if (measureSpan.end <= fieldSpan.start) {
+    const between = clauseCf.slice(measureSpan.end, fieldSpan.start)
+    if (!REVERSE_VALUE_FIELD_RE.test(between)) return false
+    const beforeMeasure = clauseCf.slice(0, measureSpan.start)
+    if (LEADING_OWN_ASSIGN_RE.test(beforeMeasure)) return false
+    const afterField = clauseCf.slice(fieldSpan.end)
+    if (TRAILING_OWN_VALUE_RE.test(afterField)) return false
+    return true
+  }
+  return false
 }
 
 function matchGroupsFact(
@@ -102,10 +159,30 @@ function matchGroupsFact(
 ): { hit: boolean; evidence: string | null } {
   for (const clause of splitClauses(text)) {
     const clauseCf = clause.toLowerCase()
-    const matched = groups.every((group) =>
-      group.some((word) => matchBoundaryToken(clauseCf, word)),
+    const groupSpans = groups.map((group) =>
+      group.flatMap((word) => findBoundaryTokenSpans(clauseCf, word)),
     )
-    if (matched) {
+    if (groupSpans.some((spans) => spans.length === 0)) {
+      continue
+    }
+
+    // 相邻的「文本字段组 + 测量值组」必须在当前子句中存在直接对应关系，防止「宽度为 139 厘米和高度为 39 厘米」串用数值
+    let bindingOk = true
+    for (let i = 0; i < groups.length - 1; i += 1) {
+      if (isTextFieldGroup(groups[i]) && isMeasurementGroup(groups[i + 1])) {
+        const hasBoundPair = groupSpans[i].some((fieldSpan) =>
+          groupSpans[i + 1].some((measureSpan) =>
+            isBoundFieldMeasurement(clauseCf, fieldSpan, measureSpan),
+          ),
+        )
+        if (!hasBoundPair) {
+          bindingOk = false
+          break
+        }
+      }
+    }
+
+    if (bindingOk) {
       return { hit: true, evidence: clause }
     }
   }
