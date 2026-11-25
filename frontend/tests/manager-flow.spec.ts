@@ -262,4 +262,86 @@ describe('店长 H5 端进度统计、补训指派与复查确认集成测试', 
 
     wrapper.unmount()
   })
+
+  it('员工第 2 轮待复查后再练 10 轮，店长详情保留最近 10 条成绩且仍完整展示第 2 轮冻结证据；证据缺失时禁止确认', async () => {
+    // 1. 林小美完成 3 节并提交第 1 轮漏讲
+    await mockDevLogin('usr_linxiaomei')
+    await staffApi.completeStaffChapter('asg_m1_bj_linxiaomei', 'ch1')
+    await staffApi.completeStaffChapter('asg_m1_bj_linxiaomei', 'ch2')
+    await staffApi.completeStaffChapter('asg_m1_bj_linxiaomei', 'ch3')
+    const created = await staffApi.createOrGetRoleplaySession('asg_m1_bj_linxiaomei')
+    await staffApi.submitRoleplayRound(created.session.id, {
+      client_round_id: createClientUuid(),
+      answer_text: M1_SAMPLE_INPUTS.missing,
+      question_variant: 'default',
+    })
+
+    // 2. 店长指派补训
+    useSession().resetLocalSessionState()
+    await mockDevLogin('usr_liming')
+    await managerApi.issueManagerRetrain(
+      'asg_m1_bj_linxiaomei',
+      { focus_fact_key: 'fact_box_rule', note: '补练端盒规则' },
+      createClientUuid(),
+    )
+
+    // 3. 员工第 2 轮用同义表达通关冻结证据，随后继续练 10 轮（第 3 至第 12 轮）
+    useSession().resetLocalSessionState()
+    await mockDevLogin('usr_linxiaomei')
+    const round2 = await staffApi.submitRoleplayRound(created.session.id, {
+      client_round_id: createClientUuid(),
+      answer_text: M1_SAMPLE_INPUTS.synonym,
+      question_variant: 'default',
+    })
+    const frozenId = round2.attempt.attempt_id
+    for (let i = 0; i < 10; i += 1) {
+      await staffApi.submitRoleplayRound(created.session.id, {
+        client_round_id: createClientUuid(),
+        answer_text: M1_SAMPLE_INPUTS.correct,
+        question_variant: 'default',
+      })
+    }
+
+    // 4. 店长进入详情页：列表仍仅展示最近 10 条（不含第 2 轮），但待复查卡片完整展示第 2 轮原话与逐项命中且可确认
+    useSession().resetLocalSessionState()
+    await mockDevLogin('usr_liming')
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/manager/assignments/asg_m1_bj_linxiaomei')
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [router] } })
+    await waitForSelector(wrapper, '[data-testid="mgr-pending-review-card"]')
+
+    expect(wrapper.findAll('[data-testid^="mgr-attempt-"]')).toHaveLength(10)
+    expect(wrapper.find(`[data-testid="mgr-attempt-${frozenId}"]`).exists()).toBe(false)
+
+    const evidenceBox = wrapper.find('[data-testid="mgr-frozen-evidence"]')
+    expect(evidenceBox.exists()).toBe(true)
+    expect(evidenceBox.text()).toContain('第 2 轮')
+    expect(evidenceBox.text()).toContain('端盒六个不重样')
+
+    const confirmBtn = wrapper.find('[data-testid="mgr-confirm-review-btn"]')
+    expect((confirmBtn.element as HTMLButtonElement).disabled).toBe(false)
+    wrapper.unmount()
+
+    // 5. 若响应异常缺失冻结证据对象（且不在最近 10 条 attempts 中），确认按钮必须被禁用并给出提示
+    const detailWithoutFrozen = await managerApi.getManagerAssignmentDetail('asg_m1_bj_linxiaomei')
+    detailWithoutFrozen.retrains[0] = {
+      ...detailWithoutFrozen.retrains[0],
+      evidence_attempt: null,
+    }
+    vi.spyOn(managerApi, 'getManagerAssignmentDetail').mockResolvedValueOnce(detailWithoutFrozen)
+
+    const router2 = createAppRouter(createMemoryHistory())
+    await router2.push('/manager/assignments/asg_m1_bj_linxiaomei')
+    await router2.isReady()
+    const wrapper2 = mount(App, { global: { plugins: [router2] } })
+    await waitForSelector(wrapper2, '[data-testid="mgr-pending-review-card"]')
+
+    expect(wrapper2.find('[data-testid="mgr-frozen-evidence"]').exists()).toBe(false)
+    expect(wrapper2.find('[data-testid="mgr-frozen-evidence-missing"]').exists()).toBe(true)
+    const disabledBtn = wrapper2.find('[data-testid="mgr-confirm-review-btn"]')
+    expect((disabledBtn.element as HTMLButtonElement).disabled).toBe(true)
+    wrapper2.unmount()
+  })
 })

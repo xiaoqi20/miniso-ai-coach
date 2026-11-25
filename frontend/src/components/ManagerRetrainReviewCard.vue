@@ -47,8 +47,12 @@ const latestAttempt = computed<ManagerAttemptDetail | null>(() => attempts[0] ??
 const missedOptions = computed(() => latestAttempt.value?.missed_required_facts ?? [])
 
 const frozenEvidence = computed<ManagerAttemptDetail | null>(() => {
-  const id = openRetrain.value?.evidence_attempt_id
+  const retrain = openRetrain.value
+  const id = retrain?.evidence_attempt_id
   if (!id) return null
+  if (retrain.evidence_attempt && retrain.evidence_attempt.attempt_id === id) {
+    return retrain.evidence_attempt
+  }
   return attempts.find((att) => att.attempt_id === id) ?? null
 })
 
@@ -97,7 +101,7 @@ function handleIssue(): void {
 
 function handleConfirm(): void {
   const rt = openRetrain.value
-  if (!rt || !rt.evidence_attempt_id || submitting) return
+  if (!rt || !rt.evidence_attempt_id || !frozenEvidence.value || submitting) return
   emit('reviewRetrain', {
     retrainId: rt.id,
     body: {
@@ -168,6 +172,9 @@ function handleReject(): void {
         命中红线：{{ frozenEvidence.redline_hits.map((r) => `${r.term}（${r.reason}）`).join('、') }}
       </div>
     </div>
+    <div v-else class="redline-alert" data-testid="mgr-frozen-evidence-missing">
+      冻结证据详情暂未加载，请刷新页面核对冻结轮次原话与逐项命中后再确认。
+    </div>
 
     <div class="field-group">
       <label for="mgr-review-note" class="field-label">复查意见（写入审计记录）</label>
@@ -194,7 +201,7 @@ function handleReject(): void {
       <button
         type="button"
         class="btn-cta confirm-btn"
-        :disabled="submitting || !openRetrain.evidence_attempt_id"
+        :disabled="submitting || !openRetrain.evidence_attempt_id || !frozenEvidence"
         data-testid="mgr-confirm-review-btn"
         @click="handleConfirm"
       >

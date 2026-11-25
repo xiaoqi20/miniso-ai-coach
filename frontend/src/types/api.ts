@@ -606,6 +606,7 @@ export interface ManagerRetrainDetail {
   baseline_round_no: number
   evidence_round_no: number | null
   evidence_attempt_id: string | null
+  evidence_attempt?: ManagerAttemptDetail | null
   issued_by: UserBrief
   issued_at: string
   reviewed_by: UserBrief | null

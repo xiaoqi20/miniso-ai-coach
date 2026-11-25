@@ -27,6 +27,7 @@ import type {
   IssueRetrainRequest,
   IssueRetrainResponse,
   ManagerAssignmentDetailResponse,
+  ManagerAttemptDetail,
   ManagerReleaseAssigneeItem,
   ManagerReleaseDetailResponse,
   ManagerReleaseListItem,
@@ -180,13 +181,13 @@ export async function mockGetManagerAssignmentDetail(
   const { version } = resolveReleaseCourseVersion(state, asg.release_id)
   const inactiveSet = new Set(state.inactive_user_ids)
 
-  const attempts = asg.rounds
+  const allAttemptsById = new Map<string, ManagerAttemptDetail>()
+  const sortedAttempts: ManagerAttemptDetail[] = asg.rounds
     .filter((r) => Boolean(r.full_attempt))
     .sort((a, b) => b.round_no - a.round_no)
-    .slice(0, 10)
     .map((r) => {
       const full = r.full_attempt!
-      return {
+      const detail: ManagerAttemptDetail = {
         attempt_id: full.attempt_id,
         round_no: r.round_no,
         total: full.total,
@@ -197,7 +198,10 @@ export async function mockGetManagerAssignmentDetail(
         redline_hits: structuredClone(full.redline_hits),
         computed_at: full.computed_at,
       }
+      allAttemptsById.set(detail.attempt_id, detail)
+      return detail
     })
+  const attempts = sortedAttempts.slice(0, 10)
 
   const retrainIds = new Set(asg.retrains.map((r) => r.id))
   const audit = state.audit_events
@@ -238,6 +242,9 @@ export async function mockGetManagerAssignmentDetail(
       baseline_round_no: rt.baseline_round_no,
       evidence_round_no: rt.evidence_round_no,
       evidence_attempt_id: rt.evidence_attempt_id,
+      evidence_attempt: rt.evidence_attempt_id
+        ? structuredClone(allAttemptsById.get(rt.evidence_attempt_id) ?? null)
+        : null,
       issued_by: { ...rt.issued_by },
       issued_at: rt.issued_at,
       reviewed_by: rt.reviewed_by ? { ...rt.reviewed_by } : null,
