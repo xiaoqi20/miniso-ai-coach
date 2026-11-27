@@ -176,3 +176,12 @@ T007 复验通过，状态为「已验收（待整合）」。验收代码为 `6
 ## 整合记录 · 2026-11-27
 
 - 2026-11-27：已将 `feat/t007-operations-ui@f7b874b`（包含 T007 验收代码 `60070ad`/`fa52694` 及 T005 P2 联动修复 `f7b874b`：渲染冻结 `evidence_attempt` 并在证据缺失时禁用确认按钮，已于 2026-11-25 随 T005 复验通过，前端 Vitest 升至 37 passed）合入 `integration/m1-consolidated`（基于 `integration/m1@0167864`）整合基线，T007 关闭为「已完成」。
+
+## T008 MySQL 联调缺陷修复记录 · 2026-11-27
+
+- **发现背景**：在 T008 使用真实 Vue Real API + FastAPI + MySQL 8.4 全栈联调阶段，总部运营进入 `/hq/courses/crs_chiikawa` 草稿工作台时，未做任何编辑即持续被「草稿有未保存的编辑内容，请先点击『保存草稿变更』」前置校验拦截，导致人工审校与发布受阻。
+- **根因定位**：MySQL 8.4 `JSON` 列按「键长度升序 + 字典序」重排对象键（如 `product` 返回为 `tag, icon, name, price, summary`），而 [HqDraftEditor.vue](../../../frontend/src/components/HqDraftEditor.vue) 构造 `draft.product` 使用固定键序且以键序敏感的 `JSON.stringify(draft) !== JSON.stringify(version.content)` 计算 `isDirty`。
+- **修复与验证**（Antigravity App 于 `feat/t008-e2e` 修复）：
+  - 在 [HqDraftEditor.vue](../../../frontend/src/components/HqDraftEditor.vue) 新增纯对象拷贝 `normalizeCourseContent` 与递归键排序序列化函数 `canonicalJson`，使 `isDirty` 对比与提交完全不受 JSON 对象键序影响。
+  - 在 [hq-flow.spec.ts](../../../frontend/tests/hq-flow.spec.ts) 新增 MySQL `JSON` 列键序重排回归用例，验证初始干净态（「已与服务端同步」禁用）、编辑后变脏及保存新版后恢复同步态。
+  - 复跑 `npm run typecheck`、`npm test`（**9 个测试文件、38 项测试通过**）、`npm run build` 与 `npm run build:real` 全部通过；随后在真实 MySQL 8.4 + FastAPI + Vue Real 全栈浏览器闭环中验证工作台正常审校通过并定向发布。

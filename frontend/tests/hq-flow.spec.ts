@@ -5,7 +5,9 @@ import App from '@/App.vue'
 import { ApiClientError } from '@/api/client'
 import * as hqApi from '@/api/hq'
 import * as staffApi from '@/api/staff'
+import HqDraftEditor from '@/components/HqDraftEditor.vue'
 import { useSession } from '@/composables/useSession'
+import type { CourseContent, HqCourseVersionDetail } from '@/types/api'
 import { mockPublishHqCourseVersion } from '@/mock/hq'
 import { mockDevLogin, resetMockState } from '@/mock/server'
 import { createAppRouter } from '@/router'
@@ -648,6 +650,86 @@ describe('总部 PC 端审校、定向发布与批次统计集成测试', () => 
     await wrapper.find('[data-testid="hq-submit-review-btn"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="hq-reviewed-summary"]').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('T008 MySQL 联调回归：服务端 JSON 列重排对象键序时不误判草稿为未保存状态', async () => {
+    const buildMysqlOrderedVersion = (revision: number, summary: string): HqCourseVersionDetail => {
+      // 模拟 MySQL 8.4 JSON 列按「键长度 + 字典序」重排后的对象键序
+      const reorderedProduct = {
+        tag: 'IP 爆款必考',
+        icon: 'box',
+        name: 'Chiikawa 联名毛绒公仔盲盒',
+        price: '¥59.00',
+        summary,
+      } as unknown as CourseContent['product']
+      const reorderedChapter = {
+        key: 'ch1',
+        short: '01 核心卖点',
+        title: '核心卖点与材质工艺',
+        mantra: '记忆口诀：正版授权',
+        speech: '这款是门店当下最核心的引流 IP 爆款。',
+        actions: ['品质锚点：定制超柔短毛绒'],
+        preview: '正版授权 · 超柔短毛绒',
+      } as unknown as CourseContent['chapters'][number]
+
+      return {
+        id: 'crv_chiikawa_v1',
+        course_id: 'crs_chiikawa',
+        version_no: 1,
+        status: 'draft',
+        revision,
+        content: {
+          chapters: [reorderedChapter],
+          product: reorderedProduct,
+        } as unknown as CourseContent,
+        rubric_version_id: 'rbn_chiikawa_v1',
+        rubric: buildCourseRubricFromForm({
+          name: 'Chiikawa 联名毛绒公仔盲盒',
+          price: '59 元',
+          cross: '9.9 元防尘挂袋',
+          facts: '端盒 6 个不重复；正版联名授权',
+          desc: '定制超柔短毛绒，可摇盒挑手感',
+        }),
+        reviewed_by: null,
+        reviewed_at: null,
+        review_note: null,
+        created_at: '2026-11-27T00:00:00.000Z',
+        updated_at: '2026-11-27T00:00:00.000Z',
+      }
+    }
+
+    const wrapper = mount(HqDraftEditor, {
+      props: {
+        version: buildMysqlOrderedVersion(1, '日系超人气正版 IP 盲盒'),
+      },
+    })
+    await flushPromises()
+
+    const saveBtn = () => wrapper.find('[data-testid="hq-save-draft-btn"]')
+    const dirtyEvents = () => wrapper.emitted('dirtyChange') ?? []
+
+    // 1. 初始加载（键序不同但值完全一致）应判定为干净状态
+    expect(dirtyEvents()[dirtyEvents().length - 1]).toEqual([false])
+    expect(saveBtn().text()).toBe('已与服务端同步')
+    expect((saveBtn().element as HTMLButtonElement).disabled).toBe(true)
+
+    // 2. 编辑字段后应切换为脏状态并启用保存按钮
+    await wrapper.find('[data-testid="hq-input-product-summary"]').setValue('已修改的卖点摘要')
+    await flushPromises()
+    expect(dirtyEvents()[dirtyEvents().length - 1]).toEqual([true])
+    expect(saveBtn().text()).toBe('保存草稿变更')
+    expect((saveBtn().element as HTMLButtonElement).disabled).toBe(false)
+
+    // 3. 收到服务端保存并再次重排键序的新版本后，应恢复为干净状态
+    await wrapper.setProps({
+      version: buildMysqlOrderedVersion(2, '已修改的卖点摘要'),
+    })
+    await flushPromises()
+    expect(dirtyEvents()[dirtyEvents().length - 1]).toEqual([false])
+    expect(saveBtn().text()).toBe('已与服务端同步')
+    expect((saveBtn().element as HTMLButtonElement).disabled).toBe(true)
 
     wrapper.unmount()
   })

@@ -23,27 +23,52 @@ const draft = reactive<CourseContent>({
   chapters: [],
 })
 
+/** 递归按键名排序序列化，避免 MySQL JSON 列重排键序导致脏状态误判 */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(',')}]`
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const keys = Object.keys(record)
+      .filter((key) => record[key] !== undefined)
+      .sort()
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+/** 规范化课程内容结构并深拷贝为纯对象，确保剥离响应式代理且前后端结构一致 */
+function normalizeCourseContent(content: CourseContent): CourseContent {
+  return {
+    product: {
+      name: content.product?.name ?? '',
+      summary: content.product?.summary ?? '',
+      price: content.product?.price ?? '',
+      tag: content.product?.tag ?? '',
+      icon: content.product?.icon ?? 'box',
+    },
+    chapters: (content.chapters ?? []).map((ch) => ({
+      ...ch,
+      actions: [...(ch.actions ?? [])],
+    })),
+  }
+}
+
 watch(
   () => version,
   (next) => {
-    const cloned = structuredClone(next.content)
-    draft.product = {
-      name: cloned.product?.name ?? '',
-      summary: cloned.product?.summary ?? '',
-      price: cloned.product?.price ?? '',
-      tag: cloned.product?.tag ?? '',
-      icon: cloned.product?.icon ?? 'box',
-    }
-    draft.chapters = (cloned.chapters ?? []).map((ch) => ({
-      ...ch,
-      actions: [...(ch.actions ?? [])],
-    }))
+    const normalized = normalizeCourseContent(next.content)
+    draft.product = normalized.product
+    draft.chapters = normalized.chapters
   },
   { immediate: true },
 )
 
 const isDirty = computed(
-  () => JSON.stringify(draft) !== JSON.stringify(version.content),
+  () =>
+    canonicalJson(normalizeCourseContent(draft)) !==
+    canonicalJson(normalizeCourseContent(version.content)),
 )
 
 watch(
@@ -64,7 +89,7 @@ function updateActionsText(index: number, raw: string): void {
 
 function handleSubmit(): void {
   if (!editable.value || saving) return
-  emit('save', structuredClone({ product: { ...draft.product }, chapters: draft.chapters.map((c) => ({ ...c, actions: [...c.actions] })) }))
+  emit('save', normalizeCourseContent(draft))
 }
 </script>
 

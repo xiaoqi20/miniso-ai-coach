@@ -11,7 +11,7 @@
 | [T005](tasks/T005-store-review.md) | 店长补训、复查及统计 API | T002 | 已完成 | 开放 | Antigravity App | integration/m1-consolidated (feat/t005-store-review) | 2026-11-27 | `e8b196d` 经 Codex 2026-11-25 复验通过（MySQL 并发补训、12 轮冻结证据与 H5 复查闭环），已通过 `0167864` 纳入 `integration/m1-consolidated` |
 | [T006](tasks/T006-employee-h5.md) | Vue 公共入口与员工 H5 | T001 | 已完成 | Antigravity App 专属 | Antigravity App | integration/m1-consolidated (feat/t006-employee-h5) | 2026-11-27 | `908fc80` / `e5712d6` 经 Codex 复验通过（19 项测试、双模式构建及移动端回归通过），已随 `feat/t007-operations-ui` 纳入 `integration/m1-consolidated` |
 | [T007](tasks/T007-operations-ui.md) | 总部 PC 与店长 H5 | T006 | 已完成 | Antigravity App 专属 | Antigravity App | integration/m1-consolidated (feat/t007-operations-ui) | 2026-11-27 | `fa52694` 与 T005 P2 联动提交 `f7b874b` 均已复验通过（37 项测试与双模式构建通过），已纳入 `integration/m1-consolidated` |
-| [T008](tasks/T008-e2e.md) | 三角色闭环联调与验收 | T003、T004、T005、T007 | 待领取 | 开放 | — | — | 2026-11-27 | T003、T004、T005、T007 已验收并整合至 `integration/m1-consolidated`（基于 `integration/m1@0167864`），整合基线前后端测试与双模式构建验证通过，已解锁可领取 |
+| [T008](tasks/T008-e2e.md) | 三角色闭环联调与验收 | T003、T004、T005、T007 | 待验收 | 开放 | Antigravity App | feat/t008-e2e | 2026-11-27 | 已完成 MySQL 8.4 迁移/3 套实库测试（T003/T005/T008 全绿）及 Vue Real+FastAPI+MySQL 三角色浏览器闭环（含重启恢复/隔离/端盒三态/落库核对），同步修复 HqDraftEditor JSON 键序误判缺陷（前端 38 passed，后端默认 83 passed/3 skipped），待 Codex 验收 |
 
 | 状态 | 含义 |
 | --- | --- |
