@@ -117,3 +117,21 @@
 - 新增可重复运行的 MySQL 并发回归。相同测试在 `3f1057c` 上得到 `500` 和 `201`，修复后均为 `201`。两门课程各有一个批次、三名应训员工和一条发布审计。[MySQL 回归](../../../backend/tests/test_course_publish_mysql.py)
 - 同一测试交错执行旧版本首次发布、同键重试和新版本发布。旧版本被替代后，原请求重试返回原批次及 `Idempotent-Replay: true`，同键改请求体返回 `409 IDEMPOTENCY_KEY_REUSED`。
 - MySQL 8.4.13 临时库迁移、种子和后端套件验证通过，共 76 项。本地验证通过，待纳入共享基线后关闭 T003。
+
+## 独立复验与同步记录 · 2026-11-25
+
+- 复验人：Antigravity App；验证基线：本地 `qoder` 分支 `1c3c1ac`（`origin/qoder` 仍停留在 `3f1057c`，待合并/推送至共享基线）。
+- 验证命令与结果（在独立的 `qoder` detached worktree 执行）：
+  - `uv run python -m compileall -q app tests alembic`：通过。
+  - `uv run pytest -q -ra`：**75 passed, 1 skipped**（跳过需要独立空发布库的 `tests/test_course_publish_mysql.py`）。
+  - Docker `mysql:8.4`（`8.4.13-1.el9`）临时库：
+    - `uv run alembic upgrade head`：成功迁移至 `9d3f2a7c1b45`。
+    - `uv run alembic check`：`No new upgrade operations detected.`（保留既有 `retrains.open_flag` 生成列提示）。
+    - `uv run alembic downgrade base` 后再 `uv run alembic upgrade head`：可逆降级与空库重建通过。
+    - `uv run python -m app.seed`：成功播种试点数据（2 门店 / 9 用户 / 7 成员 / 1 课程 / 1 版本 / 1 规则）。
+    - `SHOUKE_TEST_MYSQL_URL=... uv run pytest tests/test_course_publish_mysql.py -v -rA`：**1 passed**（覆盖两门独立课程并发首次发布均返回 `201` 无死锁，以及版本切换时旧键重放返回原批次 + `Idempotent-Replay: true`、同键不同请求体返回 `409 IDEMPOTENCY_KEY_REUSED`）；与常规套件合计 76 项全部通过。
+- 清理与范围：临时 MySQL 8.4.13 容器与临时 worktree 均已删除；本轮仅同步主工作区 T003 任务卡和看板，未修改 `feat/t007-operations-ui` 分支的业务代码。
+
+## 整合记录 · 2026-11-27
+
+- 2026-11-27：已随 `qoder@1c3c1ac` 纳入 `integration/m1-consolidated`（基于 `integration/m1@0167864`）整合基线并完成全量回归复核，T003 关闭为「已完成」（`origin/qoder` 待后续推送同步）。

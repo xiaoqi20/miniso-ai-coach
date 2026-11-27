@@ -79,4 +79,12 @@ T005 验收未通过，退回「进行中」。T008 继续排队。
     - `alembic upgrade head`、`alembic check`（`No new upgrade operations detected.`）、`python -m app.seed` 均通过；
     - `SHOUKE_TEST_MYSQL_URL="mysql+aiomysql://shouke:shouke_dev@127.0.0.1:13307/shouke" uv run pytest -v tests/test_manager_mysql.py` -> **`1 passed in 0.56s`**。
   - 前端测试与双模式构建（`feat/t007-operations-ui`）：`npm test`（**`37 passed`**）、`npm run build` 与 `VITE_API_MODE=real npm run build` 均通过。
-- **Codex 验收结论**：待复验。
+- **Codex 验收结论（2026-11-25）**：通过，状态「已验收（待整合）」。
+  - MySQL 8.4.13 / InnoDB `REPEATABLE-READ`：独立员工首次补训并发均返回 `201`；同任务同幂等键并发仅创建一条并正确重放；异键重复指派返回 `409 RETRAIN_EXISTS`。数据库断言保持 3 条补训及 3 条对应审计。异键场景为并发组之后的顺序请求，未将其表述为异键并发验证。
+  - 独立 MySQL 实库 API 闭环：第 1 轮漏讲端盒规则、店长指派补训、第 2 轮同义表达以 91 分通过并冻结证据，继续完成第 3—12 轮后，详情仍仅返回第 12—3 轮最近 10 条，同时独立返回第 2 轮冻结证据（原话、价格/授权/端盒三项命中证据完整）。
+  - 390×844 H5 Real API 浏览器验收：店长页面显示第 2 轮、91 分、原话及三项命中；确认后状态变为「复查通过」，审计轨迹记录店长李明、服务端时间和复查意见。再次经真实 API 读取确认 `retrain.status=verified`、`assignment.status=verified`，只有一条确认审计并绑定正确的冻结轮次及证据 ID。
+  - 自动化验证：后端 SQLite 全量 **83 passed, 2 skipped**（跳过项依赖独立 MySQL）；MySQL T005 首次补训并发 **1 passed**；前端 Vitest **37 passed**，`typecheck`、Mock/Real 构建通过。
+
+### 2026-11-27 整合记录
+
+- 已通过 `0167864` 合并 `feat/t005-store-review@e8b196d` 并纳入 `integration/m1-consolidated`（基于 `integration/m1@0167864`），T005 关闭为「已完成」。
